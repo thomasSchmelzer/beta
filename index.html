@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>β3.1</title>
+        <style>
+            body {
+                margin: 0;
+                background-color: black;
+                overflow: hidden;
+            }
+
+            canvas {
+                display: block;
+            }
+        </style>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.8.0/suncalc.min.js"></script>
+    </head>
+
+    <body>
+        <canvas id="canvas"></canvas>
+
+        <script>
+            var canvas = document.getElementById("canvas");
+            var ctx = canvas.getContext("2d");
+            var latitude = 0;
+            var longitude = 0;
+            var startSunrise, endSunset; // Declare startSunrise and endSunset here
+
+            function getSunriseSunset(latitude, longitude, callback) {
+                var sunriseSunsetAPI = `https://api.sunrisesunset.io/json?lat=${latitude}&lng=${longitude}&timezone=auto&date=today`;
+
+                fetch(sunriseSunsetAPI)
+                    .then((response) => response.json())
+                    .then((data) => {
+                        var sunriseTime = data.results.sunrise;
+                        var sunsetTime = data.results.sunset;
+
+                        var sunriseParts = sunriseTime.match(/(\d+):(\d+):(\d+) (AM|PM)/);
+                        var sunsetParts = sunsetTime.match(/(\d+):(\d+):(\d+) (AM|PM)/);
+
+                        if (sunriseParts && sunsetParts) {
+                            var sunriseInSeconds = convertTimeToSeconds(
+                                sunriseParts[1],
+                                sunriseParts[2],
+                                sunriseParts[3],
+                                sunriseParts[4]
+                            );
+                            var sunsetInSeconds = convertTimeToSeconds(
+                                sunsetParts[1],
+                                sunsetParts[2],
+                                sunsetParts[3],
+                                sunsetParts[4]
+                            );
+
+                            // console.log("X-Koordinate von sunrise:", (sunriseInSeconds / 86400) * canvas.width);
+                            // console.log("X-Koordinate von sunset:", (sunsetInSeconds / 86400) * canvas.width);
+
+                            callback(sunriseInSeconds, sunsetInSeconds); // Hier die Callback-Funktion mit den Werten aufrufen
+                        } else {
+                            console.error("Ungültiges Format für Sonnenaufgangs- oder Sonnenuntergangszeit.");
+                            startSunrise = null;
+                            endSunset = null;
+                        }
+                    })
+                    .catch((error) => console.error("Error fetching sunrise-sunset data:", error));
+            }
+
+            function convertTimeToSeconds(hours, minutes, seconds, period) {
+                var totalSeconds = parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds);
+                if (period === "PM") {
+                    totalSeconds += 12 * 3600; // Add 12 hours for PM
+                }
+                return totalSeconds;
+            }
+
+            function calculateSunPosition(canvas, sunriseInSeconds, sunsetInSeconds) {
+                // Get the canvas width
+                var canvasWidth = canvas.width || window.innerWidth;
+
+                // Calculate the X positions
+                var sunRiseX = Math.max(0, Math.min(canvasWidth, (sunriseInSeconds / 86400) * canvasWidth));
+                var sunSetX = Math.max(0, Math.min(canvasWidth, (sunsetInSeconds / 86400) * canvasWidth));
+
+                return { sunRiseX, sunSetX };
+                // console.log("sunriseX", sunRiseX);
+                // console.log("sunsetX", sunSetX);
+            }
+
+            var lastFrameTime = 0;
+
+            // New function to draw a vertical line
+            function drawVerticalLine(x, isVisible) {
+                // console.log("X-Koordinate der Linie:", x); // Hinzugefügte Zeile für die Konsole
+
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = isVisible ? "white" : "transparent";
+                ctx.stroke();
+            }
+
+            function updatePosition() {
+                var width = window.innerWidth;
+                var height = window.innerHeight;
+
+                canvas.width = width;
+                canvas.height = height;
+
+                var lineThickness = 0.25 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+
+                var current_time = new Date();
+                var start_date = new Date(current_time.getFullYear(), 0, 1, 0, 0, 0, 0);
+
+                var time_diff = current_time - start_date;
+
+                var start_date_line4 = new Date(1915, 11, 25);
+                var time_diff4 = current_time - start_date_line4;
+
+                var speed_betageuze = width / (1080 * 60);
+                var speed_line2 = width / 60;
+                var speed_line3 = width / (365.25 * 24 * 60 * 60);
+                var speed_line4 = 360 / (60 * 525600000);
+
+                function drawLines(sunrise, sunset) {
+                    var current_time = new Date();
+                    var time_diff = current_time - start_date;
+                    var time_diff4 = current_time - start_date_line4;
+
+                    var position1 = ((time_diff4 / 1000) * speed_betageuze) % width;
+
+                    // Calculate and set the "betageuze" line position
+                    ctx.clearRect(0, 0, width, height);
+                    ctx.beginPath();
+                    ctx.setLineDash([1, 10]);
+                    ctx.moveTo(position1, 0);
+                    ctx.lineTo(position1, height);
+                    ctx.lineWidth = lineThickness;
+                    ctx.strokeStyle = "white";
+                    ctx.stroke();
+
+                    ctx.setLineDash([]);
+
+                    // Update the position of the "betageuze" line
+                    position1 = ((time_diff4 / 1000) * speed_betageuze) % width;
+
+                    var position2 = ((time_diff / 1000) * speed_line2) % width;
+                    var position3 = ((time_diff / 1000) * speed_line3) % width;
+
+                    ctx.beginPath();
+                    ctx.moveTo(position2, 0);
+                    ctx.lineTo(position2, height);
+                    ctx.strokeStyle = "white";
+                    ctx.stroke();
+
+                    ctx.beginPath();
+                    ctx.moveTo(position3, 0);
+                    ctx.lineTo(position3, height);
+                    ctx.stroke();
+
+                    var centerX = width / 2;
+                    var centerY = height / 2;
+                    var diagonal = Math.sqrt(Math.pow(width, 2) + Math.pow(height, 2));
+                    var line4Length = diagonal * 0.5;
+                    var rotationAngle = ((time_diff4 / 1000) * speed_line4) % 360;
+                    var line4StartX = centerX;
+                    var line4StartY = centerY;
+                    var line4EndX = line4StartX + line4Length * Math.cos((rotationAngle * Math.PI) / 180);
+                    var line4EndY = line4StartY - line4Length * Math.sin((rotationAngle * Math.PI) / 180);
+
+                    ctx.beginPath();
+                    ctx.moveTo(line4StartX, line4StartY);
+                    ctx.lineTo(line4EndX, line4EndY);
+                    ctx.stroke();
+
+                    var line5StartX = line4EndX;
+                    var line5StartY = line4EndY;
+
+                    var line5EndX = centerX - line4Length * Math.cos((rotationAngle * Math.PI) / 180);
+                    var line5EndY = centerY + line4Length * Math.sin((rotationAngle * Math.PI) / 180);
+
+                    ctx.beginPath();
+                    ctx.moveTo(line5StartX, line5StartY);
+                    ctx.lineTo(line5EndX, line5EndY);
+                    ctx.stroke();
+
+                    // Draw the parabolic line
+                    if (startSunrise && endSunset) {
+                        var minY = Math.min(startSunrise.y, endSunset.y);
+                        var maxY = Math.max(startSunrise.y, endSunset.y);
+
+                        ctx.beginPath();
+                        ctx.moveTo(startSunrise.x, minY);
+                        ctx.quadraticCurveTo(width / 2, height / 2, endSunset.x, minY);
+                        ctx.lineTo(endSunset.x, maxY);
+                        ctx.quadraticCurveTo(width / 2, height / 2, startSunrise.x, maxY);
+                        ctx.closePath();
+                        ctx.strokeStyle = "white";
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                    }
+
+                    let isVisible = true;
+
+                    // Zeichne die vertikale Linielet isVisible = true;
+                    // Berechne die vergangenen Sekunden seit Mitternacht
+                    var secondsSinceMidnight =
+                        current_time.getHours() * 3600 + current_time.getMinutes() * 60 + current_time.getSeconds();
+
+                    // Berechne die X-Koordinate basierend auf den vergangenen Sekunden und der Breite des Canvas
+                    var xCoordinate = (secondsSinceMidnight / 86400) * canvas.width;
+
+                    // Hide the vertical line before sunrise
+                    if (xCoordinate <= sunrise.x) {
+                        isVisible = false;
+                    }
+
+                    // Hide the vertical line after sunset
+                    if (xCoordinate >= sunset.x) {
+                        isVisible = false;
+                    }
+
+                    drawVerticalLine(xCoordinate, isVisible);
+
+                    // console.log("sunrise.x", sunrise.x);
+                    // console.log("sunset.x", sunset.x);
+
+                    // Hide the vertical line before sunrise
+                    if (xCoordinate <= sunrise.x) {
+                        isVisible = false;
+                    }
+
+                    // Hide the vertical line after sunset
+                    if (xCoordinate >= sunset.x) {
+                        isVisible = false;
+                    }
+
+                    requestAnimationFrame(function () {
+                        drawLines(startSunrise, endSunset);
+                    });
+                }
+
+                getSunriseSunset(latitude, longitude, function (sunrise, sunset) {
+                    // Calculate the sun positions
+                    var sunPositions = calculateSunPosition(canvas, sunrise, sunset);
+
+                    // Round the X positions to integers
+                    var roundedSunriseX = Math.round(sunPositions.sunRiseX);
+                    var roundedSunsetX = Math.round(sunPositions.sunSetX);
+
+                    // Define the starting and ending points for the parabolic line
+                    startSunrise = { x: roundedSunriseX, y: height };
+                    endSunset = { x: roundedSunsetX, y: height };
+
+                    // Start the animation
+                    requestAnimationFrame(function () {
+                        drawLines(startSunrise, endSunset);
+                    });
+                });
+            }
+
+            function updateLocation() {
+                navigator.geolocation.getCurrentPosition(
+                    function (position) {
+                        latitude = position.coords.latitude;
+                        longitude = position.coords.longitude;
+
+                        // console.log("Aktuelle Position - Breitengrad:", latitude, "Längengrad:", longitude);
+
+                        // console.log("Geolokationsdaten für SunCalc - Breitengrad:", latitude, "Längengrad:", longitude);
+
+                        getSunriseSunset(latitude, longitude, function () {});
+                    },
+                    function (error) {
+                        latitude = 0;
+                        longitude = 0;
+
+                        console.error("Error getting location:", error.message);
+                    }
+                );
+            }
+            -navigator.geolocation.watchPosition(updateLocation, function (error) {
+                console.error("Error getting location:", error.message);
+            });
+
+            navigator.geolocation.getCurrentPosition(updateLocation, function (error) {
+                console.error("Error getting initial location:", error.message);
+            });
+
+            window.addEventListener("load", function () {
+                updatePosition();
+            });
+
+            window.addEventListener("resize", updatePosition);
+        </script>
+    </body>
+</html>
