@@ -33,6 +33,7 @@
                 fetch(sunriseSunsetAPI)
                     .then((response) => response.json())
                     .then((data) => {
+                        // console.log(data);
                         var sunriseTime = data.results.sunrise;
                         var sunsetTime = data.results.sunset;
 
@@ -293,6 +294,16 @@
             });
 
             window.addEventListener("resize", updatePosition);
+
+            // Funktion zum direkten Aufruf von updatePosition
+            function executeUpdatePosition() {
+                updatePosition();
+            }
+
+            // Aktualisiere die Position auch nach einer bestimmten Wartezeit
+            setTimeout(function () {
+                executeUpdatePosition();
+            }, 10); //
         </script>
     </body>
 </html>
