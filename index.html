@@ -2,7 +2,7 @@
 <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>β</title>
+        <title>β3.1</title>
         <style>
             body {
                 margin: 0;
@@ -33,7 +33,6 @@
                 fetch(sunriseSunsetAPI)
                     .then((response) => response.json())
                     .then((data) => {
-                        console.log("Empfangene API-Daten:", data); // Log für die empfangenen Daten
                         var sunriseTime = data.results.sunrise;
                         var sunsetTime = data.results.sunset;
 
@@ -271,24 +270,7 @@
 
                         // console.log("Geolokationsdaten für SunCalc - Breitengrad:", latitude, "Längengrad:", longitude);
 
-                        // Call getSunriseSunset here after getting location
-                        getSunriseSunset(latitude, longitude, function (sunrise, sunset) {
-                            // Calculate the sun positions
-                            var sunPositions = calculateSunPosition(canvas, sunrise, sunset);
-
-                            // Round the X positions to integers
-                            var roundedSunriseX = Math.round(sunPositions.sunRiseX);
-                            var roundedSunsetX = Math.round(sunPositions.sunSetX);
-
-                            // Define the starting and ending points for the parabolic line
-                            startSunrise = { x: roundedSunriseX, y: window.innerHeight };
-                            endSunset = { x: roundedSunsetX, y: window.innerHeight };
-
-                            // Start the animation
-                            requestAnimationFrame(function () {
-                                drawLines(startSunrise, endSunset);
-                            });
-                        });
+                        getSunriseSunset(latitude, longitude, function () {});
                     },
                     function (error) {
                         latitude = 0;
@@ -298,9 +280,7 @@
                     }
                 );
             }
-
-            // This line initiates the watch for geolocation changes
-            navigator.geolocation.watchPosition(updateLocation, function (error) {
+            -navigator.geolocation.watchPosition(updateLocation, function (error) {
                 console.error("Error getting location:", error.message);
             });
 
