@@ -14,7 +14,7 @@
                 display: block;
             }
 
-            /* Stil für das Modalfenster */
+            /* Style of modal
             #myModal {
                 display: none;
                 position: fixed;
@@ -34,7 +34,7 @@
 
     <body>
         <canvas id="canvas"></canvas>
-        <!-- Das Modalfenster -->
+        
         <div id="myModal">for full experience of β, enable access to location</div>
 
         <script>
@@ -88,7 +88,7 @@
                             // console.log("X-Koordinate von sunrise:", (sunriseInSeconds / 86400) * canvas.width);
                             // console.log("X-Koordinate von sunset:", (sunsetInSeconds / 86400) * canvas.width);
 
-                            callback(sunriseInSeconds, sunsetInSeconds); // Hier die Callback-Funktion mit den Werten aufrufen
+                            callback(sunriseInSeconds, sunsetInSeconds); // callback with values
                         } else {
                             console.error("Ungültiges Format für Sonnenaufgangs- oder Sonnenuntergangszeit.");
                             startSunrise = null;
@@ -123,7 +123,7 @@
 
             // New function to draw a vertical line
             function drawVerticalLine(x, isVisible) {
-                // console.log("X-Koordinate der Linie:", x); // Hinzugefügte Zeile für die Konsole
+                // console.log("X-Koordinate der Linie:", x); 
 
                 ctx.beginPath();
                 ctx.moveTo(x, 0);
@@ -235,12 +235,12 @@
 
                     let isVisible = true;
 
-                    // Zeichne die vertikale Linielet isVisible = true;
-                    // Berechne die vergangenen Sekunden seit Mitternacht
+                    // vertical line: isVisible = true;
+                
                     var secondsSinceMidnight =
                         current_time.getHours() * 3600 + current_time.getMinutes() * 60 + current_time.getSeconds();
 
-                    // Berechne die X-Koordinate basierend auf den vergangenen Sekunden und der Breite des Canvas
+                    // calculate x since midnight/width
                     var xCoordinate = (secondsSinceMidnight / 86400) * canvas.width;
 
                     // Hide the vertical line before sunrise
@@ -298,9 +298,9 @@
                         latitude = position.coords.latitude;
                         longitude = position.coords.longitude;
 
-                        // console.log("Aktuelle Position - Breitengrad:", latitude, "Längengrad:", longitude);
+                        // console.log("actual position:", latitude, "Längengrad:", longitude);
 
-                        // console.log("Geolokationsdaten für SunCalc - Breitengrad:", latitude, "Längengrad:", longitude);
+                        // console.log("Geo for SunCalc - latitude:", latitude, "longitude:", longitude);
 
                         getSunriseSunset(latitude, longitude, function () {});
                     },
@@ -327,12 +327,12 @@
 
             window.addEventListener("resize", updatePosition);
 
-            // Funktion zum direkten Aufruf von updatePosition
+            // call updatePosition
             function executeUpdatePosition() {
                 updatePosition();
             }
 
-            // Aktualisiere die Position auch nach einer bestimmten Wartezeit
+            // second call update after x seconds
             setTimeout(function () {
                 executeUpdatePosition();
             }, 10); //
