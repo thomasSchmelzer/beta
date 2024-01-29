@@ -312,7 +312,7 @@
                     }
                 );
             }
-            -navigator.geolocation.watchPosition(updateLocation, function (error) {
+            navigator.geolocation.watchPosition(updateLocation, function (error) {
                 console.error("Error getting location:", error.message);
             });
 
