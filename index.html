@@ -14,8 +14,7 @@
                 display: block;
             }
 
-            /* Style of modal
-            #myModal {
+            * Style of modal #myModal {
                 display: none;
                 position: fixed;
                 top: 50%;
@@ -34,7 +33,7 @@
 
     <body>
         <canvas id="canvas"></canvas>
-        
+
         <div id="myModal">for full experience of β, enable access to location</div>
 
         <script>
@@ -44,6 +43,11 @@
             var longitude = 0;
             var startSunrise, endSunset; // Declare startSunrise and endSunset here
             var firstLoad = true; // Variable deklarieren
+            var roundedMoonRiseX, roundedMoonSetX; // Declare these variables here
+
+            // Initialize the moon position variable
+
+            var moonPosition = SunCalc.getMoonPosition(new Date(), latitude, longitude);
 
             function showAlert() {
                 if (firstLoad) {
@@ -64,7 +68,7 @@
                 fetch(sunriseSunsetAPI)
                     .then((response) => response.json())
                     .then((data) => {
-                        // console.log(data);
+                        // console.log("sunTimes", data);
                         var sunriseTime = data.results.sunrise;
                         var sunsetTime = data.results.sunset;
 
@@ -85,9 +89,6 @@
                                 sunsetParts[4]
                             );
 
-                            // console.log("X-Koordinate von sunrise:", (sunriseInSeconds / 86400) * canvas.width);
-                            // console.log("X-Koordinate von sunset:", (sunsetInSeconds / 86400) * canvas.width);
-
                             callback(sunriseInSeconds, sunsetInSeconds); // callback with values
                         } else {
                             console.error("Ungültiges Format für Sonnenaufgangs- oder Sonnenuntergangszeit.");
@@ -97,6 +98,68 @@
                     })
                     .catch((error) => console.error("Error fetching sunrise-sunset data:", error));
             }
+
+            // MOON SECTION
+
+            function getMoonRiseSetInSeconds(latitude, longitude, date, callback) {
+                // Calculate the Mondaufgangs- und Monduntergangszeiten using the Suncalc library
+                var moonTimes = SunCalc.getMoonTimes(date, latitude, longitude);
+
+                // If moonTimes.rise or moonTimes.set is undefined, set them to the current date
+                moonTimes.rise = moonTimes.rise || new Date();
+                moonTimes.set = moonTimes.set || new Date();
+
+                // Calculate the Mondaufgangs- und Monduntergangszeiten in seconds
+                var moonRiseInSeconds =
+                    moonTimes.rise.getHours() * 3600 + moonTimes.rise.getMinutes() * 60 + moonTimes.rise.getSeconds();
+                var moonSetInSeconds =
+                    moonTimes.set.getHours() * 3600 + moonTimes.set.getMinutes() * 60 + moonTimes.set.getSeconds();
+
+                // Call the callback function with Mondaufgangs- und Monduntergangsdaten in seconds
+                callback(Math.round(moonRiseInSeconds), Math.round(moonSetInSeconds));
+            }
+
+            // Funktion zur Berechnung der Mondposition
+            function calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds) {
+                var canvasWidth = canvas.width || window.innerWidth;
+
+                // Calculate the X positions and round to whole numbers
+                var moonRiseX = Math.round(
+                    Math.max(0, Math.min(canvasWidth, (moonRiseInSeconds / 86400) * canvasWidth))
+                );
+                var moonSetX = Math.round(Math.max(0, Math.min(canvasWidth, (moonSetInSeconds / 86400) * canvasWidth)));
+
+                // Handle the case where moonSetX is less than moonRiseX (occurs if moonset is on the next day)
+                if (moonSetX < moonRiseX) {
+                    moonSetX += canvasWidth;
+                }
+
+                return { moonRiseX, moonSetX };
+            }
+
+            function drawMoonParabola(moonRiseX, moonSetX, moonRiseY, moonSetY, moonParabolaPeakY) {
+                // Draw the parabolic line
+                ctx.beginPath();
+                ctx.moveTo(moonRiseX, moonRiseY);
+
+                // Calculate the control point for the parabolic curve
+                var controlX = (moonRiseX + moonSetX) / 2;
+                var controlY = moonParabolaPeakY; // Use the specified peak value
+
+                // Draw the quadratic curve
+                ctx.quadraticCurveTo(controlX, controlY, moonSetX, moonSetY);
+
+                // Set the line color and width
+                ctx.strokeStyle = "white";
+                ctx.lineWidth = 0.5;
+
+                // Draw the curve
+                ctx.stroke();
+            }
+
+            // THIS IS END OF MOON SECTION
+
+            // NOW SUN
 
             function convertTimeToSeconds(hours, minutes, seconds, period) {
                 var totalSeconds = parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds);
@@ -115,16 +178,14 @@
                 var sunSetX = Math.max(0, Math.min(canvasWidth, (sunsetInSeconds / 86400) * canvasWidth));
 
                 return { sunRiseX, sunSetX };
-                // console.log("sunriseX", sunRiseX);
-                // console.log("sunsetX", sunSetX);
             }
 
             var lastFrameTime = 0;
 
+            var roundedMoonRiseX, roundedMoonSetX; // Definieren Sie die Variablen im globalen Bereich
+
             // New function to draw a vertical line
             function drawVerticalLine(x, isVisible) {
-                // console.log("X-Koordinate der Linie:", x); 
-
                 ctx.beginPath();
                 ctx.moveTo(x, 0);
                 ctx.lineTo(x, canvas.height);
@@ -153,8 +214,7 @@
                 var speed_betageuze = width / (1080 * 60);
                 var speed_line2 = width / 60;
                 var speed_line3 = width / (365.25 * 24 * 60 * 60);
-                var speed_line4 = 360 / (-1 * (1000 * 525600000)); //1000 years
-                
+                var speed_line4 = 360 / (-1 * (1000 * 525600000));
 
                 function drawLines(sunrise, sunset) {
                     var current_time = new Date();
@@ -234,10 +294,12 @@
                         ctx.stroke();
                     }
 
+                    // Draw vertical line for sun
+
                     let isVisible = true;
 
                     // vertical line: isVisible = true;
-                
+
                     var secondsSinceMidnight =
                         current_time.getHours() * 3600 + current_time.getMinutes() * 60 + current_time.getSeconds();
 
@@ -256,9 +318,6 @@
 
                     drawVerticalLine(xCoordinate, isVisible);
 
-                    // console.log("sunrise.x", sunrise.x);
-                    // console.log("sunset.x", sunset.x);
-
                     // Hide the vertical line before sunrise
                     if (xCoordinate <= sunrise.x) {
                         isVisible = false;
@@ -268,6 +327,60 @@
                     if (xCoordinate >= sunset.x) {
                         isVisible = false;
                     }
+
+                    // Draw the parabolic line for yesterday's moon
+                    var yesterday = new Date();
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    getMoonRiseSetInSeconds(
+                        latitude,
+                        longitude,
+                        current_time, // Pass current_time here
+                        function (moonRiseInSeconds, moonSetInSeconds) {
+                            var moonPositions = calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds);
+                            drawMoonParabola(
+                                moonPositions.moonRiseX - canvas.width,
+                                moonPositions.moonSetX - canvas.width,
+                                0,
+                                0,
+                                0.4 * canvas.height
+                            );
+                        }
+                    );
+                    // Draw the parabolic line for today's moon
+                    getMoonRiseSetInSeconds(
+                        latitude,
+                        longitude,
+                        current_time, // Pass current_time here
+                        function (moonRiseInSeconds, moonSetInSeconds) {
+                            var moonPositions = calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds);
+                            drawMoonParabola(
+                                moonPositions.moonRiseX,
+                                moonPositions.moonSetX,
+                                0,
+                                0,
+                                0.4 * canvas.height
+                            );
+                        }
+                    );
+
+                    // Draw the parabolic line for tomorrow's moon
+                    var tomorrow = new Date();
+                    tomorrow.setDate(tomorrow.getDate() + 1);
+                    getMoonRiseSetInSeconds(
+                        latitude,
+                        longitude,
+                        current_time, // Pass current_time here
+                        function (moonRiseInSeconds, moonSetInSeconds) {
+                            var moonPositions = calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds);
+                            drawMoonParabola(
+                                moonPositions.moonRiseX + canvas.width,
+                                moonPositions.moonSetX + canvas.width,
+                                0,
+                                0,
+                                0.4 * canvas.height
+                            );
+                        }
+                    );
 
                     requestAnimationFrame(function () {
                         drawLines(startSunrise, endSunset);
@@ -298,8 +411,6 @@
                     function (position) {
                         latitude = position.coords.latitude;
                         longitude = position.coords.longitude;
-
-                        // console.log("actual position:", latitude, "Längengrad:", longitude);
 
                         // console.log("Geo for SunCalc - latitude:", latitude, "longitude:", longitude);
 
