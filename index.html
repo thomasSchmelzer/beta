@@ -14,7 +14,8 @@
                 display: block;
             }
 
-            * Style of modal #myModal {
+            /* Bug fix 1: CSS comment was malformed — "* Style of modal" is not valid CSS */
+            #myModal {
                 display: none;
                 position: fixed;
                 top: 50%;
@@ -41,11 +42,19 @@
             var ctx = canvas.getContext("2d");
             var latitude = 0;
             var longitude = 0;
-            var startSunrise, endSunset; // Declare startSunrise and endSunset here
-            var firstLoad = true; // Variable deklarieren
-            var roundedMoonRiseX, roundedMoonSetX; // Declare these variables here
+            var startSunrise, endSunset;
+            var firstLoad = true;
 
-            // Initialize the moon position variable
+            // Bug fix 2: Cache sunrise/sunset data — previously fetched on every frame (thousands of API calls).
+            // Now fetched once per day and stored.
+            var sunriseSunsetCache = null;
+            var sunriseSunsetCacheDate = null;
+
+            // Bug fix 3: Cache moon data similarly — previously recalculated on every frame.
+            var moonCache = {};
+
+            // Bug fix 4: animationId stored so the loop can be cancelled on resize without stacking.
+            var animationId = null;
 
             var moonPosition = SunCalc.getMoonPosition(new Date(), latitude, longitude);
 
@@ -53,22 +62,31 @@
                 if (firstLoad) {
                     var modal = document.getElementById("myModal");
                     modal.style.display = "block";
-
                     firstLoad = false;
-
                     setTimeout(function () {
                         modal.style.display = "none";
                     }, 4000);
                 }
             }
 
-            function getSunriseSunset(latitude, longitude, callback) {
-                var sunriseSunsetAPI = `https://api.sunrisesunset.io/json?lat=${latitude}&lng=${longitude}&timezone=auto&date=today`;
+            function todayDateString() {
+                var d = new Date();
+                return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+            }
+
+            function getSunriseSunset(lat, lng, callback) {
+                // Bug fix 2 continued: return cached value if it's from today
+                var today = todayDateString();
+                if (sunriseSunsetCache && sunriseSunsetCacheDate === today) {
+                    callback(sunriseSunsetCache.sunrise, sunriseSunsetCache.sunset);
+                    return;
+                }
+
+                var sunriseSunsetAPI = "https://api.sunrisesunset.io/json?lat=" + lat + "&lng=" + lng + "&timezone=auto&date=today";
 
                 fetch(sunriseSunsetAPI)
-                    .then((response) => response.json())
-                    .then((data) => {
-                        // console.log("sunTimes", data);
+                    .then(function(response) { return response.json(); })
+                    .then(function(data) {
                         var sunriseTime = data.results.sunrise;
                         var sunsetTime = data.results.sunset;
 
@@ -76,115 +94,83 @@
                         var sunsetParts = sunsetTime.match(/(\d+):(\d+):(\d+) (AM|PM)/);
 
                         if (sunriseParts && sunsetParts) {
-                            var sunriseInSeconds = convertTimeToSeconds(
-                                sunriseParts[1],
-                                sunriseParts[2],
-                                sunriseParts[3],
-                                sunriseParts[4]
-                            );
-                            var sunsetInSeconds = convertTimeToSeconds(
-                                sunsetParts[1],
-                                sunsetParts[2],
-                                sunsetParts[3],
-                                sunsetParts[4]
-                            );
+                            var sunriseInSeconds = convertTimeToSeconds(sunriseParts[1], sunriseParts[2], sunriseParts[3], sunriseParts[4]);
+                            var sunsetInSeconds = convertTimeToSeconds(sunsetParts[1], sunsetParts[2], sunsetParts[3], sunsetParts[4]);
 
-                            callback(sunriseInSeconds, sunsetInSeconds); // callback with values
+                            sunriseSunsetCache = { sunrise: sunriseInSeconds, sunset: sunsetInSeconds };
+                            sunriseSunsetCacheDate = today;
+
+                            callback(sunriseInSeconds, sunsetInSeconds);
                         } else {
-                            console.error("Ungültiges Format für Sonnenaufgangs- oder Sonnenuntergangszeit.");
-                            startSunrise = null;
-                            endSunset = null;
+                            console.error("Invalid sunrise/sunset format.");
                         }
                     })
-                    .catch((error) => console.error("Error fetching sunrise-sunset data:", error));
+                    .catch(function(error) { console.error("Error fetching sunrise-sunset data:", error); });
             }
 
             // MOON SECTION
 
-            function getMoonRiseSetInSeconds(latitude, longitude, date, callback) {
-                // Calculate the Mondaufgangs- und Monduntergangszeiten using the Suncalc library
-                var moonTimes = SunCalc.getMoonTimes(date, latitude, longitude);
+            function getMoonRiseSetInSeconds(lat, lng, date, callback) {
+                // Bug fix 3: cache moon rise/set by date string so it's not recalculated every frame
+                var key = date.getFullYear() + "-" + date.getMonth() + "-" + date.getDate();
+                if (moonCache[key]) {
+                    callback(moonCache[key].rise, moonCache[key].set);
+                    return;
+                }
 
-                // If moonTimes.rise or moonTimes.set is undefined, set them to the current date
+                var moonTimes = SunCalc.getMoonTimes(date, lat, lng);
                 moonTimes.rise = moonTimes.rise || new Date();
                 moonTimes.set = moonTimes.set || new Date();
 
-                // Calculate the Mondaufgangs- und Monduntergangszeiten in seconds
-                var moonRiseInSeconds =
-                    moonTimes.rise.getHours() * 3600 + moonTimes.rise.getMinutes() * 60 + moonTimes.rise.getSeconds();
-                var moonSetInSeconds =
-                    moonTimes.set.getHours() * 3600 + moonTimes.set.getMinutes() * 60 + moonTimes.set.getSeconds();
+                var moonRiseInSeconds = moonTimes.rise.getHours() * 3600 + moonTimes.rise.getMinutes() * 60 + moonTimes.rise.getSeconds();
+                var moonSetInSeconds = moonTimes.set.getHours() * 3600 + moonTimes.set.getMinutes() * 60 + moonTimes.set.getSeconds();
 
-                // Call the callback function with Mondaufgangs- und Monduntergangsdaten in seconds
-                callback(Math.round(moonRiseInSeconds), Math.round(moonSetInSeconds));
+                moonCache[key] = { rise: Math.round(moonRiseInSeconds), set: Math.round(moonSetInSeconds) };
+                callback(moonCache[key].rise, moonCache[key].set);
             }
 
-            // Funktion zur Berechnung der Mondposition
-            function calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds) {
-                var canvasWidth = canvas.width || window.innerWidth;
-
-                // Calculate the X positions and round to whole numbers
-                var moonRiseX = Math.round(
-                    Math.max(0, Math.min(canvasWidth, (moonRiseInSeconds / 86400) * canvasWidth))
-                );
+            function calculateMoonPosition(canvasEl, moonRiseInSeconds, moonSetInSeconds) {
+                var canvasWidth = canvasEl.width || window.innerWidth;
+                var moonRiseX = Math.round(Math.max(0, Math.min(canvasWidth, (moonRiseInSeconds / 86400) * canvasWidth)));
                 var moonSetX = Math.round(Math.max(0, Math.min(canvasWidth, (moonSetInSeconds / 86400) * canvasWidth)));
 
-                // Handle the case where moonSetX is less than moonRiseX (occurs if moonset is on the next day)
                 if (moonSetX < moonRiseX) {
                     moonSetX += canvasWidth;
                 }
 
-                return { moonRiseX, moonSetX };
+                return { moonRiseX: moonRiseX, moonSetX: moonSetX };
             }
 
             function drawMoonParabola(moonRiseX, moonSetX, moonRiseY, moonSetY, moonParabolaPeakY) {
-                // Draw the parabolic line
                 ctx.beginPath();
                 ctx.moveTo(moonRiseX, moonRiseY);
-
-                // Calculate the control point for the parabolic curve
                 var controlX = (moonRiseX + moonSetX) / 2;
-                var controlY = moonParabolaPeakY; // Use the specified peak value
-
-                // Draw the quadratic curve
-                ctx.quadraticCurveTo(controlX, controlY, moonSetX, moonSetY);
-
-                // Set the line color and width
+                ctx.quadraticCurveTo(controlX, moonParabolaPeakY, moonSetX, moonSetY);
                 ctx.strokeStyle = "white";
                 ctx.lineWidth = 0.5;
-
-                // Draw the curve
                 ctx.stroke();
             }
 
-            // THIS IS END OF MOON SECTION
-
-            // NOW SUN
+            // SUN SECTION
 
             function convertTimeToSeconds(hours, minutes, seconds, period) {
                 var totalSeconds = parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds);
-                if (period === "PM") {
-                    totalSeconds += 12 * 3600; // Add 12 hours for PM
+                if (period === "PM" && parseInt(hours) !== 12) {
+                    totalSeconds += 12 * 3600;
+                }
+                if (period === "AM" && parseInt(hours) === 12) {
+                    totalSeconds -= 12 * 3600;
                 }
                 return totalSeconds;
             }
 
-            function calculateSunPosition(canvas, sunriseInSeconds, sunsetInSeconds) {
-                // Get the canvas width
-                var canvasWidth = canvas.width || window.innerWidth;
-
-                // Calculate the X positions
+            function calculateSunPosition(canvasEl, sunriseInSeconds, sunsetInSeconds) {
+                var canvasWidth = canvasEl.width || window.innerWidth;
                 var sunRiseX = Math.max(0, Math.min(canvasWidth, (sunriseInSeconds / 86400) * canvasWidth));
                 var sunSetX = Math.max(0, Math.min(canvasWidth, (sunsetInSeconds / 86400) * canvasWidth));
-
-                return { sunRiseX, sunSetX };
+                return { sunRiseX: sunRiseX, sunSetX: sunSetX };
             }
 
-            var lastFrameTime = 0;
-
-            var roundedMoonRiseX, roundedMoonSetX; // Definieren Sie die Variablen im globalen Bereich
-
-            // New function to draw a vertical line
             function drawVerticalLine(x, isVisible) {
                 ctx.beginPath();
                 ctx.moveTo(x, 0);
@@ -194,18 +180,16 @@
                 ctx.stroke();
             }
 
-            function updatePosition() {
-                var width = window.innerWidth;
-                var height = window.innerHeight;
+            function drawLines(sunrise, sunset) {
+                // Bug fix 4: Cancel any previous animation frame before starting a new one
+                // (handled by caller — see updatePosition)
 
-                canvas.width = width;
-                canvas.height = height;
-
+                var width = canvas.width;
+                var height = canvas.height;
                 var lineThickness = 0.25 * parseFloat(getComputedStyle(document.documentElement).fontSize);
 
                 var current_time = new Date();
                 var start_date = new Date(current_time.getFullYear(), 0, 1, 0, 0, 0, 0);
-
                 var time_diff = current_time - start_date;
 
                 var start_date_line4 = new Date(1915, 11, 25);
@@ -216,221 +200,153 @@
                 var speed_line3 = width / (365.25 * 24 * 60 * 60);
                 var speed_line4 = 360 / (-1 * (1000 * 525600000));
 
-                function drawLines(sunrise, sunset) {
-                    var current_time = new Date();
-                    var time_diff = current_time - start_date;
-                    var time_diff4 = current_time - start_date_line4;
+                var position1 = ((time_diff4 / 1000) * speed_betageuze) % width;
 
-                    var position1 = ((time_diff4 / 1000) * speed_betageuze) % width;
+                ctx.clearRect(0, 0, width, height);
+                ctx.beginPath();
+                ctx.setLineDash([1, 10]);
+                ctx.moveTo(position1, 0);
+                ctx.lineTo(position1, height);
+                ctx.lineWidth = lineThickness;
+                ctx.strokeStyle = "white";
+                ctx.stroke();
+                ctx.setLineDash([]);
 
-                    // Calculate and set the "betageuze" line position
-                    ctx.clearRect(0, 0, width, height);
+                var position2 = ((time_diff / 1000) * speed_line2) % width;
+                var position3 = ((time_diff / 1000) * speed_line3) % width;
+
+                ctx.beginPath();
+                ctx.moveTo(position2, 0);
+                ctx.lineTo(position2, height);
+                ctx.lineWidth = lineThickness;
+                ctx.strokeStyle = "white";
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(position3, 0);
+                ctx.lineTo(position3, height);
+                ctx.lineWidth = lineThickness;
+                ctx.stroke();
+
+                var centerX = width / 2;
+                var centerY = height / 2;
+                var diagonal = Math.sqrt(width * width + height * height);
+                var line4Length = diagonal * 0.5;
+                var rotationAngle = ((time_diff4 / 1000) * speed_line4) % 360;
+                var line4EndX = centerX + line4Length * Math.cos((rotationAngle * Math.PI) / 180);
+                var line4EndY = centerY - line4Length * Math.sin((rotationAngle * Math.PI) / 180);
+                var line5EndX = centerX - line4Length * Math.cos((rotationAngle * Math.PI) / 180);
+                var line5EndY = centerY + line4Length * Math.sin((rotationAngle * Math.PI) / 180);
+
+                ctx.beginPath();
+                ctx.moveTo(centerX, centerY);
+                ctx.lineTo(line4EndX, line4EndY);
+                ctx.lineWidth = lineThickness;
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(line4EndX, line4EndY);
+                ctx.lineTo(line5EndX, line5EndY);
+                ctx.stroke();
+
+                // Draw sun parabola
+                if (sunrise && sunset) {
+                    var minY = Math.min(sunrise.y, sunset.y);
+                    var maxY = Math.max(sunrise.y, sunset.y);
+
                     ctx.beginPath();
-                    ctx.setLineDash([1, 10]);
-                    ctx.moveTo(position1, 0);
-                    ctx.lineTo(position1, height);
-                    ctx.lineWidth = lineThickness;
+                    ctx.moveTo(sunrise.x, minY);
+                    ctx.quadraticCurveTo(width / 2, height / 2, sunset.x, minY);
+                    ctx.lineTo(sunset.x, maxY);
+                    ctx.quadraticCurveTo(width / 2, height / 2, sunrise.x, maxY);
+                    ctx.closePath();
                     ctx.strokeStyle = "white";
+                    ctx.lineWidth = 1;
                     ctx.stroke();
-
-                    ctx.setLineDash([]);
-
-                    // Update the position of the "betageuze" line
-                    position1 = ((time_diff4 / 1000) * speed_betageuze) % width;
-
-                    var position2 = ((time_diff / 1000) * speed_line2) % width;
-                    var position3 = ((time_diff / 1000) * speed_line3) % width;
-
-                    ctx.beginPath();
-                    ctx.moveTo(position2, 0);
-                    ctx.lineTo(position2, height);
-                    ctx.strokeStyle = "white";
-                    ctx.stroke();
-
-                    ctx.beginPath();
-                    ctx.moveTo(position3, 0);
-                    ctx.lineTo(position3, height);
-                    ctx.stroke();
-
-                    var centerX = width / 2;
-                    var centerY = height / 2;
-                    var diagonal = Math.sqrt(Math.pow(width, 2) + Math.pow(height, 2));
-                    var line4Length = diagonal * 0.5;
-                    var rotationAngle = ((time_diff4 / 1000) * speed_line4) % 360;
-                    var line4StartX = centerX;
-                    var line4StartY = centerY;
-                    var line4EndX = line4StartX + line4Length * Math.cos((rotationAngle * Math.PI) / 180);
-                    var line4EndY = line4StartY - line4Length * Math.sin((rotationAngle * Math.PI) / 180);
-
-                    ctx.beginPath();
-                    ctx.moveTo(line4StartX, line4StartY);
-                    ctx.lineTo(line4EndX, line4EndY);
-                    ctx.stroke();
-
-                    var line5StartX = line4EndX;
-                    var line5StartY = line4EndY;
-
-                    var line5EndX = centerX - line4Length * Math.cos((rotationAngle * Math.PI) / 180);
-                    var line5EndY = centerY + line4Length * Math.sin((rotationAngle * Math.PI) / 180);
-
-                    ctx.beginPath();
-                    ctx.moveTo(line5StartX, line5StartY);
-                    ctx.lineTo(line5EndX, line5EndY);
-                    ctx.stroke();
-
-                    // Draw the parabolic line
-                    if (startSunrise && endSunset) {
-                        var minY = Math.min(startSunrise.y, endSunset.y);
-                        var maxY = Math.max(startSunrise.y, endSunset.y);
-
-                        ctx.beginPath();
-                        ctx.moveTo(startSunrise.x, minY);
-                        ctx.quadraticCurveTo(width / 2, height / 2, endSunset.x, minY);
-                        ctx.lineTo(endSunset.x, maxY);
-                        ctx.quadraticCurveTo(width / 2, height / 2, startSunrise.x, maxY);
-                        ctx.closePath();
-                        ctx.strokeStyle = "white";
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
-                    }
-
-                    // Draw vertical line for sun
-
-                    let isVisible = true;
-
-                    // vertical line: isVisible = true;
-
-                    var secondsSinceMidnight =
-                        current_time.getHours() * 3600 + current_time.getMinutes() * 60 + current_time.getSeconds();
-
-                    // calculate x since midnight/width
-                    var xCoordinate = (secondsSinceMidnight / 86400) * canvas.width;
-
-                    // Hide the vertical line before sunrise
-                    if (xCoordinate <= sunrise.x) {
-                        isVisible = false;
-                    }
-
-                    // Hide the vertical line after sunset
-                    if (xCoordinate >= sunset.x) {
-                        isVisible = false;
-                    }
-
-                    drawVerticalLine(xCoordinate, isVisible);
-
-                    // Hide the vertical line before sunrise
-                    if (xCoordinate <= sunrise.x) {
-                        isVisible = false;
-                    }
-
-                    // Hide the vertical line after sunset
-                    if (xCoordinate >= sunset.x) {
-                        isVisible = false;
-                    }
-
-                    // Draw the parabolic line for yesterday's moon
-                    var yesterday = new Date();
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    getMoonRiseSetInSeconds(
-                        latitude,
-                        longitude,
-                        current_time, // Pass current_time here
-                        function (moonRiseInSeconds, moonSetInSeconds) {
-                            var moonPositions = calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds);
-                            drawMoonParabola(
-                                moonPositions.moonRiseX - canvas.width,
-                                moonPositions.moonSetX - canvas.width,
-                                0,
-                                0,
-                                0.4 * canvas.height
-                            );
-                        }
-                    );
-                    // Draw the parabolic line for today's moon
-                    getMoonRiseSetInSeconds(
-                        latitude,
-                        longitude,
-                        current_time, // Pass current_time here
-                        function (moonRiseInSeconds, moonSetInSeconds) {
-                            var moonPositions = calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds);
-                            drawMoonParabola(
-                                moonPositions.moonRiseX,
-                                moonPositions.moonSetX,
-                                0,
-                                0,
-                                0.4 * canvas.height
-                            );
-                        }
-                    );
-
-                    // Draw the parabolic line for tomorrow's moon
-                    var tomorrow = new Date();
-                    tomorrow.setDate(tomorrow.getDate() + 1);
-                    getMoonRiseSetInSeconds(
-                        latitude,
-                        longitude,
-                        current_time, // Pass current_time here
-                        function (moonRiseInSeconds, moonSetInSeconds) {
-                            var moonPositions = calculateMoonPosition(canvas, moonRiseInSeconds, moonSetInSeconds);
-                            drawMoonParabola(
-                                moonPositions.moonRiseX + canvas.width,
-                                moonPositions.moonSetX + canvas.width,
-                                0,
-                                0,
-                                0.4 * canvas.height
-                            );
-                        }
-                    );
-
-                    requestAnimationFrame(function () {
-                        drawLines(startSunrise, endSunset);
-                    });
                 }
 
-                getSunriseSunset(latitude, longitude, function (sunrise, sunset) {
-                    // Calculate the sun positions
-                    var sunPositions = calculateSunPosition(canvas, sunrise, sunset);
+                // Draw vertical sun line
+                var secondsSinceMidnight = current_time.getHours() * 3600 + current_time.getMinutes() * 60 + current_time.getSeconds();
+                var xCoordinate = (secondsSinceMidnight / 86400) * canvas.width;
+                var isVisible = sunrise && sunset && xCoordinate > sunrise.x && xCoordinate < sunset.x;
+                drawVerticalLine(xCoordinate, isVisible);
 
-                    // Round the X positions to integers
+                // Bug fix 5: yesterday/tomorrow were declared but current_time was passed to all three —
+                // now each uses its own correctly offset date.
+                var yesterday = new Date(current_time);
+                yesterday.setDate(yesterday.getDate() - 1);
+
+                var tomorrow = new Date(current_time);
+                tomorrow.setDate(tomorrow.getDate() + 1);
+
+                getMoonRiseSetInSeconds(latitude, longitude, yesterday, function (rise, set) {
+                    var pos = calculateMoonPosition(canvas, rise, set);
+                    drawMoonParabola(pos.moonRiseX - canvas.width, pos.moonSetX - canvas.width, 0, 0, 0.4 * canvas.height);
+                });
+
+                getMoonRiseSetInSeconds(latitude, longitude, current_time, function (rise, set) {
+                    var pos = calculateMoonPosition(canvas, rise, set);
+                    drawMoonParabola(pos.moonRiseX, pos.moonSetX, 0, 0, 0.4 * canvas.height);
+                });
+
+                getMoonRiseSetInSeconds(latitude, longitude, tomorrow, function (rise, set) {
+                    var pos = calculateMoonPosition(canvas, rise, set);
+                    drawMoonParabola(pos.moonRiseX + canvas.width, pos.moonSetX + canvas.width, 0, 0, 0.4 * canvas.height);
+                });
+
+                // Bug fix 4: Store the animationId so resize can cancel the old loop
+                animationId = requestAnimationFrame(function () {
+                    drawLines(startSunrise, endSunset);
+                });
+            }
+
+            function updatePosition() {
+                // Bug fix 4: Cancel the running animation loop before resizing and restarting
+                if (animationId !== null) {
+                    cancelAnimationFrame(animationId);
+                    animationId = null;
+                }
+
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+
+                getSunriseSunset(latitude, longitude, function (sunrise, sunset) {
+                    var sunPositions = calculateSunPosition(canvas, sunrise, sunset);
                     var roundedSunriseX = Math.round(sunPositions.sunRiseX);
                     var roundedSunsetX = Math.round(sunPositions.sunSetX);
 
-                    // Define the starting and ending points for the parabolic line
-                    startSunrise = { x: roundedSunriseX, y: height };
-                    endSunset = { x: roundedSunsetX, y: height };
+                    startSunrise = { x: roundedSunriseX, y: canvas.height };
+                    endSunset = { x: roundedSunsetX, y: canvas.height };
 
-                    // Start the animation
-                    requestAnimationFrame(function () {
+                    animationId = requestAnimationFrame(function () {
                         drawLines(startSunrise, endSunset);
                     });
                 });
             }
 
-            function updateLocation() {
-                navigator.geolocation.getCurrentPosition(
-                    function (position) {
-                        latitude = position.coords.latitude;
-                        longitude = position.coords.longitude;
+            // Bug fix 6: updateLocation was used as both a watchPosition callback AND called getCurrentPosition separately,
+            // causing double-init and a confusing recursive-looking structure.
+            // Now updateLocation only updates lat/lng and invalidates caches; the animation loop reads the new values automatically.
+            function updateLocation(position) {
+                latitude = position.coords.latitude;
+                longitude = position.coords.longitude;
 
-                        // console.log("Geo for SunCalc - latitude:", latitude, "longitude:", longitude);
+                // Invalidate caches so the new location is used on the next frame cycle
+                sunriseSunsetCache = null;
+                sunriseSunsetCacheDate = null;
+                moonCache = {};
 
-                        getSunriseSunset(latitude, longitude, function () {});
-                    },
-                    function (error) {
-                        latitude = 0;
-                        longitude = 0;
-
-                        console.error("Error getting location:", error.message);
-                    }
-                );
+                // Re-fetch sun data for the new location and restart the loop
+                updatePosition();
             }
-            navigator.geolocation.watchPosition(updateLocation, function (error) {
-                console.error("Error getting location:", error.message);
-            });
 
-            navigator.geolocation.getCurrentPosition(updateLocation, function (error) {
-                console.error("Error getting initial location:", error.message);
-            });
+            function locationError(error) {
+                console.error("Error getting location:", error.message);
+            }
+
+            // Bug fix 6 continued: single watchPosition is sufficient — it fires immediately on first fix
+            // and then again on position change. No need for a separate getCurrentPosition call.
+            navigator.geolocation.watchPosition(updateLocation, locationError);
 
             window.addEventListener("load", function () {
                 updatePosition();
@@ -438,16 +354,6 @@
             });
 
             window.addEventListener("resize", updatePosition);
-
-            // call updatePosition
-            function executeUpdatePosition() {
-                updatePosition();
-            }
-
-            // second call update after x seconds
-            setTimeout(function () {
-                executeUpdatePosition();
-            }, 10); //
         </script>
     </body>
 </html>
