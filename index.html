@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,12 +9,9 @@
                 background-color: black;
                 overflow: hidden;
             }
-
             canvas {
                 display: block;
             }
-
-            /* Bug fix 1: CSS comment was malformed — "* Style of modal" is not valid CSS */
             #myModal {
                 display: none;
                 position: fixed;
@@ -28,14 +25,25 @@
                 z-index: 9999;
                 font-family: "Helvetica", sans-serif;
             }
+            #lineLabel {
+                display: none;
+                position: fixed;
+                font-family: "Helvetica", sans-serif;
+                font-size: 11px;
+                color: white;
+                letter-spacing: 0.08em;
+                pointer-events: none;
+                z-index: 100;
+                white-space: nowrap;
+            }
         </style>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.8.0/suncalc.min.js"></script>
     </head>
 
     <body>
         <canvas id="canvas"></canvas>
-
         <div id="myModal">for full experience of β, enable access to location</div>
+        <div id="lineLabel"></div>
 
         <script>
             var canvas = document.getElementById("canvas");
@@ -44,316 +52,869 @@
             var longitude = 0;
             var startSunrise, endSunset;
             var firstLoad = true;
-
-            // Bug fix 2: Cache sunrise/sunset data — previously fetched on every frame (thousands of API calls).
-            // Now fetched once per day and stored.
-            var sunriseSunsetCache = null;
-            var sunriseSunsetCacheDate = null;
-
-            // Bug fix 3: Cache moon data similarly — previously recalculated on every frame.
-            var moonCache = {};
-
-            // Bug fix 4: animationId stored so the loop can be cancelled on resize without stacking.
             var animationId = null;
 
-            var moonPosition = SunCalc.getMoonPosition(new Date(), latitude, longitude);
+            var sunriseSunsetCache = null;
+            var sunriseSunsetCacheDate = null;
+            var moonCache = {};
 
+            function getMoonLineStyle(date) {
+                var illum = SunCalc.getMoonIllumination(date);
+                var fraction = illum.fraction;
+                return {
+                    lineWidth: 0.3 + fraction * 1.7,
+                    opacity: 0.15 + fraction * 0.85,
+                };
+            }
+
+            var twilightCache = null;
+
+            function getTwilightSeconds(lat, lng) {
+                if (twilightCache) return twilightCache;
+                var now = new Date();
+                var times = SunCalc.getTimes(now, lat, lng);
+                function toSec(d) {
+                    if (!d || isNaN(d)) return null;
+                    return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+                }
+                twilightCache = {
+                    astronomicalDawn: toSec(times.nightEnd),
+                    nauticalDawn: toSec(times.nauticalDawn),
+                    civilDawn: toSec(times.dawn),
+                    civilDusk: toSec(times.dusk),
+                    nauticalDusk: toSec(times.nauticalDusk),
+                    astronomicalDusk: toSec(times.night),
+                };
+                return twilightCache;
+            }
+
+            function drawTwilightParabola(riseSeconds, setSeconds, peakFraction, lineWidth, opacity) {
+                if (riseSeconds === null || setSeconds === null) return;
+                var w = canvas.width, h = canvas.height;
+                var riseX = (riseSeconds / 86400) * w;
+                var setX  = (setSeconds  / 86400) * w;
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.beginPath();
+                ctx.moveTo(riseX, h);
+                ctx.quadraticCurveTo((riseX + setX) / 2, peakFraction * h, setX, h);
+                ctx.strokeStyle = "white";
+                ctx.lineWidth = lineWidth;
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            var PLANETS = {
+                Venus: {
+                    a:0.72333199,e:0.00677323,I:3.39471,L0:181.97973,w0:131.53298,O0:76.68069,
+                    dL:58517.8156,dw:54.89339,dO:-996.89068,dI:-0.00853,
+                    label:"Venus",drawMode:"dots",dotRadius:0.7,dotSpacing:6,lineWidth:0
+                },
+                Mars: {
+                    a:1.52366231,e:0.09341233,I:1.85061,L0:-4.56813,w0:-23.91744,O0:49.7132,
+                    dL:19140.2993,dw:23.91286,dO:-1020.12111,dI:-0.00723,
+                    label:"Mars",drawMode:"dash",dash:[8,4],lineWidth:0.6
+                },
+                Jupiter: {
+                    a:5.20336301,e:0.04839266,I:1.3053,L0:34.33479,w0:14.27495,O0:100.29209,
+                    dL:3034.9057,dw:5.12819,dO:-1020.19185,dI:-0.00339,
+                    label:"Jupiter",drawMode:"dotdash",dash:[1,14],lineWidth:1.2
+                }
+            };
+
+            function deg2rad(d) { return d * Math.PI / 180; }
+            function rad2deg(r) { return r * 180 / Math.PI; }
+
+            function solveKepler(M, e) {
+                var E = M;
+                for (var i = 0; i < 10; i++) E -= (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+                return E;
+            }
+
+            function getPlanetRiseSet(planet, lat, lng, date) {
+                var JD = date.getTime() / 86400000 + 2440587.5;
+                var T  = (JD - 2451545.0) / 36525;
+                var L  = (planet.L0 + planet.dL * T) % 360;
+                var w  = planet.w0 + planet.dw * T;
+                var O  = planet.O0 + planet.dO * T;
+                var I  = planet.I  + planet.dI * T;
+                var M  = deg2rad((L - w + 360) % 360);
+                var E  = solveKepler(M, planet.e);
+                var v  = 2 * Math.atan2(Math.sqrt(1+planet.e)*Math.sin(E/2), Math.sqrt(1-planet.e)*Math.cos(E/2));
+                var r  = planet.a * (1 - planet.e * Math.cos(E));
+                var xh = r*(Math.cos(deg2rad(O))*Math.cos(v+deg2rad(w-O)) - Math.sin(deg2rad(O))*Math.sin(v+deg2rad(w-O))*Math.cos(deg2rad(I)));
+                var yh = r*(Math.sin(deg2rad(O))*Math.cos(v+deg2rad(w-O)) + Math.cos(deg2rad(O))*Math.sin(v+deg2rad(w-O))*Math.cos(deg2rad(I)));
+                var zh = r*Math.sin(v+deg2rad(w-O))*Math.sin(deg2rad(I));
+                var Le = (100.46457166 + 36000.7698278*T) % 360;
+                var xe = -Math.cos(deg2rad(Le)), ye = -Math.sin(deg2rad(Le));
+                var dx=xh-xe, dy=yh-ye, dz=zh;
+                var ecLon = Math.atan2(dy,dx), ecLat = Math.atan2(dz,Math.sqrt(dx*dx+dy*dy));
+                var eps = deg2rad(23.439 - 0.0000004*T*36525);
+                var ra  = Math.atan2(Math.sin(ecLon)*Math.cos(eps)-Math.tan(ecLat)*Math.sin(eps), Math.cos(ecLon));
+                var dec = Math.asin(Math.sin(ecLat)*Math.cos(eps)+Math.cos(ecLat)*Math.sin(eps)*Math.sin(ecLon));
+                ra = (rad2deg(ra)+360)%360; dec = rad2deg(dec);
+                var cosH = (Math.sin(deg2rad(-0.566))-Math.sin(deg2rad(lat))*Math.sin(deg2rad(dec))) /
+                           (Math.cos(deg2rad(lat))*Math.cos(deg2rad(dec)));
+                if (cosH<-1) return {riseSeconds:0,setSeconds:86400,aboveHorizon:true};
+                if (cosH> 1) return {riseSeconds:null,setSeconds:null,aboveHorizon:false};
+                var H  = rad2deg(Math.acos(cosH));
+                var JD0= Math.floor(JD-0.5)+0.5, T0=(JD0-2451545.0)/36525;
+                var theta0 = (100.4606184+36000.7700536*T0+0.000387933*T0*T0)%360;
+                var transit = (((ra-theta0-lng)/15)%24+24)%24;
+                var riseH = ((transit-H/15)%24+24)%24;
+                var setH  = ((transit+H/15)%24+24)%24;
+                return {riseSeconds:riseH*3600,setSeconds:setH*3600,aboveHorizon:true};
+            }
+
+            function sampleParabola(riseX,setX,peakY,baseY,steps) {
+                var pts=[], cx=(riseX+setX)/2;
+                for (var i=0;i<=steps;i++) {
+                    var t=i/steps,mt=1-t;
+                    pts.push({x:mt*mt*riseX+2*mt*t*cx+t*t*setX, y:mt*mt*baseY+2*mt*t*peakY+t*t*baseY});
+                }
+                return pts;
+            }
+
+            function dotsAlongCurve(pts,radius,spacing) {
+                var acc=0,next=0;
+                for (var i=1;i<pts.length;i++) {
+                    var dx=pts[i].x-pts[i-1].x, dy=pts[i].y-pts[i-1].y;
+                    var seg=Math.sqrt(dx*dx+dy*dy);
+                    acc+=seg;
+                    while (acc>=next) {
+                        var f=(acc-next)/seg;
+                        ctx.beginPath();
+                        ctx.arc(pts[i].x-dx*f, pts[i].y-dy*f, radius, 0, Math.PI*2);
+                        ctx.fill();
+                        next+=spacing;
+                    }
+                }
+            }
+
+            function drawPlanetLine(planet,lat,lng,date) {
+                var ps=getPlanetRiseSet(planet,lat,lng,date);
+                if (!ps.aboveHorizon||ps.riseSeconds===null) return;
+                var w=canvas.width,h=canvas.height;
+                var secNow=date.getHours()*3600+date.getMinutes()*60+date.getSeconds();
+                var riseX=(ps.riseSeconds/86400)*w, setX=(ps.setSeconds/86400)*w;
+                var visible=secNow>=ps.riseSeconds&&secNow<=ps.setSeconds;
+                ctx.save();
+                ctx.globalAlpha=visible?0.75:0.22;
+                ctx.strokeStyle=ctx.fillStyle="white";
+                if (planet.drawMode==="dots") {
+                    dotsAlongCurve(sampleParabola(riseX,setX,0.3*h,h,300),planet.dotRadius,planet.dotSpacing);
+                } else {
+                    ctx.setLineDash(planet.dash);
+                    ctx.lineWidth=planet.lineWidth;
+                    ctx.beginPath();
+                    ctx.moveTo(riseX,h);
+                    ctx.quadraticCurveTo((riseX+setX)/2,0.3*h,setX,h);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+                ctx.restore();
+            }
+
+            // ─────────────────────────────────────────────
+            // SONIFICATION
+            // ─────────────────────────────────────────────
+            var audioCtx=null, audioReady=false;
+            var sunOsc=null, sunGain=null;
+            var moonOsc=null, moonGain=null;
+            var lastCrossedLines={};
+
+            // Duck-Zustand: Erdbeben schneidet Grundfrequenz kurz weg
+            var duckEvents=[];
+
+            function ensureAudio() {
+                if (audioReady) return;
+                audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+                function makeOsc(freq) {
+                    var osc=audioCtx.createOscillator(), gain=audioCtx.createGain();
+                    osc.type="sine"; osc.frequency.value=freq; gain.gain.value=0;
+                    osc.connect(gain); gain.connect(audioCtx.destination); osc.start();
+                    return {osc,gain};
+                }
+                var s=makeOsc(194.18); sunOsc=s.osc; sunGain=s.gain;
+                var m=makeOsc(210.42); moonOsc=m.osc; moonGain=m.gain;
+                audioReady=true;
+            }
+
+            function parabolaYAt(nowX,riseX,setX,peakY,baseY) {
+                if (!isFinite(riseX)||!isFinite(setX)||riseX===setX) return null;
+                if (nowX<riseX||nowX>setX) return null;
+                var t=Math.max(0,Math.min(1,(nowX-riseX)/(setX-riseX))), mt=1-t;
+                var y=mt*mt*baseY+2*mt*t*peakY+t*t*baseY;
+                return (y-peakY)/(baseY-peakY);
+            }
+
+            function calcFreq(secCurveT,baseFreq) {
+                if (secCurveT===null) return baseFreq;
+                return baseFreq*Math.pow(2, 1-Math.max(0,Math.min(1,secCurveT)));
+            }
+
+            // Gibt aktuellen Duck-Pegel 0..1 zurück und räumt abgelaufene Events auf
+            function currentDuck(nowMs) {
+                var duck=0;
+                duckEvents=duckEvents.filter(function(ev) {
+                    var p=(nowMs-ev.start)/ev.duration;
+                    if (p>=1) return false;
+                    // Schneller Attack (5ms), exponentieller Release
+                    var env = p<0.02 ? p/0.02 : Math.pow(1-p, 2.8);
+                    duck=Math.max(duck, ev.amount*env);
+                    return true;
+                });
+                return Math.min(0.999, duck);
+            }
+
+            function updateCurveOscillators(nowX,secX,sunRX,sunSX,moonRX,moonSX,moonIllum) {
+                if (!audioReady) return;
+                var t=audioCtx.currentTime, h=canvas.height, tau=0.15;
+                var duck=currentDuck(Date.now());
+                var level=Math.pow(1-duck,2.5); // Grundton-Cut
+
+                var sunT=parabolaYAt(nowX,sunRX,sunSX,h*0.5,h);
+                if (sunT!==null) {
+                    var secSunT=parabolaYAt(secX,sunRX,sunSX,h*0.5,h);
+                    sunOsc.frequency.setTargetAtTime(calcFreq(secSunT,194.18),t,tau);
+                    sunGain.gain.setTargetAtTime(0.07*level,t,tau);
+                } else {
+                    sunGain.gain.setTargetAtTime(0,t,tau);
+                }
+
+                var moonT=parabolaYAt(nowX,moonRX,moonSX,h*0.4,h);
+                if (moonT!==null) {
+                    var secMoonT=parabolaYAt(secX,moonRX,moonSX,h*0.4,h);
+                    moonOsc.frequency.setTargetAtTime(calcFreq(secMoonT,210.42),t,tau);
+                    moonGain.gain.setTargetAtTime((0.02+moonIllum*0.05)*level,t,tau);
+                } else {
+                    moonGain.gain.setTargetAtTime(0,t,tau);
+                }
+            }
+
+            function playTone(freq,pan,duration,volume) {
+                if (!audioReady) return;
+                var osc=audioCtx.createOscillator();
+                var gain=audioCtx.createGain();
+                var panner=audioCtx.createStereoPanner();
+                osc.type="sine";
+                osc.frequency.setValueAtTime(freq,audioCtx.currentTime);
+                gain.gain.setValueAtTime(volume,audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+duration);
+                panner.pan.setValueAtTime(pan,audioCtx.currentTime);
+                osc.connect(gain); gain.connect(panner); panner.connect(audioCtx.destination);
+                osc.start(); osc.stop(audioCtx.currentTime+duration);
+            }
+
+            // ─────────────────────────────────────────────
+            // ERDBEBEN-SOUND
+            //
+            // Drei Schichten, keine Convolver:
+            //   1. Sub-Transient: kurzer Sinus ~30Hz, sofortiger Attack, schneller Decay
+            //   2. Noise-Burst: gefiltertes weißes Rauschen durch Biquad-Resonanz
+            //      → Knarz/Punch-Charakter
+            //   3. High-Click: sehr kurzer Highpass-Burst, gibt dem Impuls einen
+            //      harten Anschlag ("Knack")
+            //
+            // Magnitude skaliert: Lautstärke, Subfrequenz, Filtermittenfrequenz, Ducklänge
+            // Duck: Sonne/Mond-Grundton wird für die Dauer des Events weggezogen
+            // ─────────────────────────────────────────────
+            function playQuakeImpact(mag, pan) {
+                if (!audioReady) return;
+                var now=audioCtx.currentTime;
+                var norm=Math.max(0,Math.min(1,(mag-2.5)/5.5)); // 0 bei mag2.5, 1 bei mag8
+
+                // ── 1. Sub-Transient ──
+                var subOsc=audioCtx.createOscillator();
+                var subGain=audioCtx.createGain();
+                var subPan=audioCtx.createStereoPanner();
+                subOsc.type="sine";
+                subOsc.frequency.setValueAtTime(22+norm*18, now);           // 22–40 Hz
+                subGain.gain.setValueAtTime(0,now);
+                subGain.gain.linearRampToValueAtTime(0.28+norm*0.22, now+0.003);  // schneller Attack
+                subGain.gain.exponentialRampToValueAtTime(0.0001, now+0.08+norm*0.12); // kurzer Decay
+                subPan.pan.setValueAtTime(pan*0.4, now);
+                subOsc.connect(subGain); subGain.connect(subPan); subPan.connect(audioCtx.destination);
+                subOsc.start(now); subOsc.stop(now+0.22);
+
+                // ── 2. Noise-Burst durch Resonanzfilter ──
+                var nLen=Math.floor(audioCtx.sampleRate*0.04);
+                var nBuf=audioCtx.createBuffer(1,nLen,audioCtx.sampleRate);
+                var nData=nBuf.getChannelData(0);
+                for (var i=0;i<nLen;i++) {
+                    var env=Math.pow(1-i/nLen, 3+norm*4); // steilerer Decay bei höherer Mag
+                    nData[i]=(Math.random()*2-1)*env;
+                }
+                var noise=audioCtx.createBufferSource();
+                noise.buffer=nBuf;
+
+                // Bandpass-Resonanz: gibt Knarz-Charakter
+                var bp=audioCtx.createBiquadFilter();
+                bp.type="bandpass";
+                bp.frequency.setValueAtTime(180+norm*220, now); // 180–400 Hz
+                bp.Q.setValueAtTime(2.5+norm*3.5, now);         // höhere Q = mehr Resonanz
+
+                // Zweiter Highpass darunter für Körper
+                var hp=audioCtx.createBiquadFilter();
+                hp.type="highpass";
+                hp.frequency.setValueAtTime(60, now);
+
+                var noiseGain=audioCtx.createGain();
+                noiseGain.gain.setValueAtTime(0.35+norm*0.3, now);
+
+                var noisePan=audioCtx.createStereoPanner();
+                noisePan.pan.setValueAtTime(pan*0.5, now);
+
+                noise.connect(hp); hp.connect(bp); bp.connect(noiseGain);
+                noiseGain.connect(noisePan); noisePan.connect(audioCtx.destination);
+                noise.start(now); noise.stop(now+0.05);
+
+                // ── 3. High-Click ──
+                var cLen=Math.floor(audioCtx.sampleRate*0.004);
+                var cBuf=audioCtx.createBuffer(1,cLen,audioCtx.sampleRate);
+                var cData=cBuf.getChannelData(0);
+                for (var j=0;j<cLen;j++) {
+                    cData[j]=(Math.random()*2-1)*Math.pow(1-j/cLen,2);
+                }
+                var click=audioCtx.createBufferSource();
+                click.buffer=cBuf;
+                var clickHP=audioCtx.createBiquadFilter();
+                clickHP.type="highpass";
+                clickHP.frequency.setValueAtTime(3500+norm*1500, now);
+                var clickGain=audioCtx.createGain();
+                clickGain.gain.setValueAtTime(0.15+norm*0.1, now);
+                var clickPan=audioCtx.createStereoPanner();
+                clickPan.pan.setValueAtTime(pan*0.3, now);
+                click.connect(clickHP); clickHP.connect(clickGain);
+                clickGain.connect(clickPan); clickPan.connect(audioCtx.destination);
+                click.start(now); click.stop(now+0.006);
+
+                // ── Duck: Grundton-Cut ──
+                // Dauer skaliert mit Magnitude: mag2.5→0.4s, mag8→2.2s
+                var duckDuration=(0.4+norm*1.8)*1000;
+                duckEvents.push({
+                    start: Date.now(),
+                    duration: duckDuration,
+                    amount: 0.85+norm*0.12  // 0.85..0.97 — fast vollständiger Cut
+                });
+
+                // ── Nachhall: Feedback-Delay-Loop ──
+                // Simuliert seismisches Nachklingen ohne Convolver.
+                // Sub und Noise werden in einen gefilterten Delay-Loop eingespeist.
+                // Tiefpass dämpft hohe Frequenzen mit jedem Echo — natürlicher Abfall.
+                // Feedback 0.3..0.55 — bei hoher Mag länger nachhallend.
+                var reverbSend=audioCtx.createGain();
+                var delay=audioCtx.createDelay(2.0);
+                var feedback=audioCtx.createGain();
+                var reverbLP=audioCtx.createBiquadFilter();
+                var reverbOut=audioCtx.createGain();
+                var reverbPan=audioCtx.createStereoPanner();
+
+                delay.delayTime.setValueAtTime(0.06+norm*0.09, now); // 60–150ms Echo
+                feedback.gain.setValueAtTime(0.28+norm*0.27, now);   // 0.28–0.55
+                reverbLP.type="lowpass";
+                reverbLP.frequency.setValueAtTime(900-norm*300, now); // 600–900 Hz — dumpfer mit Zeit
+                reverbOut.gain.setValueAtTime(0.18+norm*0.14, now);
+                reverbPan.pan.setValueAtTime(pan*0.2, now);           // leicht versetzt
+
+                // Loop: delay → LP-filter → feedback → delay
+                delay.connect(reverbLP);
+                reverbLP.connect(feedback);
+                feedback.connect(delay);
+                // Ausgang
+                delay.connect(reverbOut);
+                reverbOut.connect(reverbPan);
+                reverbPan.connect(audioCtx.destination);
+
+                // Sub und Noise in den Reverb einspeisen
+                subGain.connect(reverbSend);
+                noiseGain.connect(reverbSend);
+                reverbSend.gain.setValueAtTime(0.4, now);
+                reverbSend.connect(delay);
+
+                // Feedback nach Decay-Ende unterbrechen (verhindert ewigen Loop)
+                var reverbTail=(1.5+norm*2.5)*1000;
+                setTimeout(function(){
+                    try {
+                        feedback.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+                    } catch(e) {}
+                }, reverbTail);
+            }
+
+            function checkCrossings(nowX,lines) {
+                lines.forEach(function(line) {
+                    var near=Math.abs(nowX-line.x)<2;
+                    if (near&&!lastCrossedLines[line.id]) {
+                        playTone(line.freq,line.pan,1.2,0.05);
+                        lastCrossedLines[line.id]=true;
+                    }
+                    if (!near) lastCrossedLines[line.id]=false;
+                });
+            }
+
+            // ─────────────────────────────────────────────
+            // TOUCH LABELS
+            // ─────────────────────────────────────────────
+            var labelTimeout=null;
+            var labelEl=document.getElementById("lineLabel");
+
+            function showLineLabel(text,x,y) {
+                labelEl.textContent=text;
+                labelEl.style.left=Math.min(x+12,window.innerWidth-160)+"px";
+                labelEl.style.top=Math.max(y-20,8)+"px";
+                labelEl.style.display="block";
+                clearTimeout(labelTimeout);
+                labelTimeout=setTimeout(function(){labelEl.style.display="none";},2200);
+            }
+
+            var namedLines=[];
+
+            function registerLine(id,x,label,freq,pan) {
+                namedLines.push({id,x,label,freq,pan});
+            }
+
+            function hitTestLines(clientX) {
+                var closest=null, minDist=Infinity;
+                namedLines.forEach(function(l){
+                    var d=Math.abs(clientX-l.x);
+                    if(d<minDist){minDist=d;closest=l;}
+                });
+                return minDist<18?closest:null;
+            }
+
+            function onPointerDown(e) {
+                ensureAudio();
+                var clientX=e.touches?e.touches[0].clientX:e.clientX;
+                var clientY=e.touches?e.touches[0].clientY:e.clientY;
+                var hit=hitTestLines(clientX);
+                if(hit) showLineLabel(hit.label,clientX,clientY);
+            }
+
+            canvas.addEventListener("mousedown",onPointerDown);
+            canvas.addEventListener("touchstart",onPointerDown,{passive:true});
+
+            // ─────────────────────────────────────────────
+            // ERDBEBEN — Daten + Darstellung
+            //
+            // x-Position: UTC-Zeit des Bebens → Tagesposition auf der Zeitachse
+            // y-Position: horizontale Mitte des Canvas (height * 0.5)
+            //
+            // Darstellung:
+            //   Ruhezustand: kleiner weißer Punkt, Radius ∝ Magnitude
+            //   Ausbreitung: einzelner roter Kreis wächst von Eventpunkt,
+            //                Linienstärke und Geschwindigkeit ∝ Magnitude,
+            //                fade-out über die gesamte Dauer
+            //   Magnitude-Label: erscheint kurz beim Trigger via #lineLabel-System
+            //
+            // Trigger: Sekundenstritch passiert den Eventpunkt (wie in Dok.3)
+            // ─────────────────────────────────────────────
+            var quakeBursts=[];
+            var lastQuakeFetch=0;
+            var quakeFetchInterval=null;
+            var lastSecondsX=null;
+            var secondsSweepId=0;
+
+            var SHOCKWAVE_MIN_DURATION=4;
+            var SHOCKWAVE_MAX_DURATION=14;
+
+            function shockwaveDuration(mag) {
+                var t=Math.max(0,Math.min(1,(mag-2.5)/5.5));
+                return SHOCKWAVE_MIN_DURATION+t*(SHOCKWAVE_MAX_DURATION-SHOCKWAVE_MIN_DURATION);
+            }
+
+            function secondsLineCrossed(prevX,currentX,targetX) {
+                if (prevX===null) return false;
+                var tol=0.75;
+                if (currentX>=prevX) return targetX>=prevX-tol && targetX<currentX+tol;
+                return targetX>=prevX-tol || targetX<currentX+tol;
+            }
+
+            function fetchQuakes() {
+                var now=Date.now();
+                if (now-lastQuakeFetch<30000&&lastQuakeFetch>0) return;
+
+                // Tagesfenster in Lokalzeit — passt zur Canvas-Zeitachse
+                // die ebenfalls in Lokalzeit läuft (getHours() etc.)
+                var d=new Date();
+                var localMidnight=new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0);
+                var localTomorrow=new Date(localMidnight.getTime()+24*3600000);
+
+                var url="https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson"
+                       +"&starttime="+localMidnight.toISOString()
+                       +"&endtime="+localTomorrow.toISOString()
+                       +"&minmagnitude=-1.0&orderby=time";
+                fetch(url)
+                    .then(function(r){return r.json();})
+                    .catch(function(){return null;})
+                    .then(function(data){
+                        if(!data||!data.features) return;
+                        data.features.forEach(function(f){
+                            var t=new Date(f.properties.time);
+                            // Lokalzeit — gleiche Referenz wie die Canvas-Achse
+                            var sec=t.getHours()*3600+t.getMinutes()*60+t.getSeconds();
+                            var id="q_"+f.id;
+                            var mag=Number(f.properties.mag);
+                            if(!isFinite(mag)) mag=0;
+                            if(!quakeBursts.some(function(q){return q.id===id;})) {
+                                quakeBursts.push({
+                                    id:id,
+                                    x:sec/86400,
+                                    mag:mag,
+                                    start:null,
+                                    played:false,
+                                    lastTriggeredSweep:-1
+                                });
+                            }
+                        });
+                        quakeBursts.sort(function(a,b){return a.x-b.x;});
+                        lastQuakeFetch=Date.now();
+                    });
+            }
+
+            function drawQuakes(nowMs, pos2, width, height) {
+                var nextSweepId=secondsSweepId+(lastSecondsX!==null&&pos2<lastSecondsX?1:0);
+
+                quakeBursts.forEach(function(q){
+                    var x=q.x*width;
+                    var cy=height*0.5; // horizontale Mitte
+                    var norm=Math.max(0,Math.min(1,(q.mag-2.5)/5.5));
+
+                    // Ruhepunkt: kleiner weißer Kreis
+                    var dotR=1.2+norm*3.5;
+                    ctx.save();
+                    ctx.globalAlpha=0.5;
+                    ctx.beginPath();
+                    ctx.arc(x,cy,dotR,0,Math.PI*2);
+                    ctx.fillStyle="white";
+                    ctx.fill();
+                    ctx.restore();
+
+                    // Trigger durch Sekundenstritch
+                    if(secondsLineCrossed(lastSecondsX,pos2,x)&&q.lastTriggeredSweep!==nextSweepId) {
+                        q.start=nowMs;
+                        q.played=false;
+                        q.lastTriggeredSweep=nextSweepId;
+                    }
+
+                    if(q.start===null) return;
+                    var duration=shockwaveDuration(q.mag);
+                    var age=(nowMs-q.start)/1000;
+                    if(age>duration) return;
+
+                    var progress=age/duration;
+                    // Ausbreitungsgeschwindigkeit skaliert mit Magnitude
+                    var maxR=Math.min(width,height)*(0.15+norm*0.35);
+                    var radius=progress*maxR;
+                    // Linienstärke: dicker am Anfang, dünner am Ende
+                    var lw=Math.max(0.3,(1.5+norm*1.5)*(1-progress));
+                    // Opacity: linear fade-out, stärker bei kleinen Beben
+                    var alpha=(1-progress)*(0.5+norm*0.4);
+
+                    // Einzelner roter Kreis
+                    ctx.save();
+                    ctx.globalAlpha=alpha;
+                    ctx.beginPath();
+                    ctx.arc(x,cy,radius,0,Math.PI*2);
+                    ctx.strokeStyle="rgb(220,50,30)";
+                    ctx.lineWidth=lw;
+                    ctx.stroke();
+                    ctx.restore();
+
+                    // Sound + Magnitude-Label beim ersten Frame
+                    if(!q.played) {
+                        q.played=true;
+                        var pan=Math.max(-0.8,Math.min(0.8,q.x*2-1));
+                        playQuakeImpact(q.mag,pan);
+                        // Label via bestehendes #lineLabel-System
+                        showLineLabel(
+                            "M"+q.mag.toFixed(1),
+                            x, cy - radius - 10
+                        );
+                    }
+                });
+
+                secondsSweepId=nextSweepId;
+                lastSecondsX=pos2;
+            }
+
+            // ─────────────────────────────────────────────
+            // HELPERS
+            // ─────────────────────────────────────────────
             function showAlert() {
-                if (firstLoad) {
-                    var modal = document.getElementById("myModal");
-                    modal.style.display = "block";
-                    firstLoad = false;
-                    setTimeout(function () {
-                        modal.style.display = "none";
-                    }, 4000);
+                if(firstLoad) {
+                    document.getElementById("myModal").style.display="block";
+                    firstLoad=false;
+                    setTimeout(function(){document.getElementById("myModal").style.display="none";},4000);
                 }
             }
 
             function todayDateString() {
-                var d = new Date();
-                return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+                var d=new Date();
+                return d.getFullYear()+"-"+d.getMonth()+"-"+d.getDate();
             }
 
-            function getSunriseSunset(lat, lng, callback) {
-                // Bug fix 2 continued: return cached value if it's from today
-                var today = todayDateString();
-                if (sunriseSunsetCache && sunriseSunsetCacheDate === today) {
-                    callback(sunriseSunsetCache.sunrise, sunriseSunsetCache.sunset);
-                    return;
+            function getSunriseSunset(lat,lng,callback) {
+                var today=todayDateString();
+                if(sunriseSunsetCache&&sunriseSunsetCacheDate===today){
+                    callback(sunriseSunsetCache.sunrise,sunriseSunsetCache.sunset); return;
                 }
-
-                var sunriseSunsetAPI = "https://api.sunrisesunset.io/json?lat=" + lat + "&lng=" + lng + "&timezone=auto&date=today";
-
-                fetch(sunriseSunsetAPI)
-                    .then(function(response) { return response.json(); })
-                    .then(function(data) {
-                        var sunriseTime = data.results.sunrise;
-                        var sunsetTime = data.results.sunset;
-
-                        var sunriseParts = sunriseTime.match(/(\d+):(\d+):(\d+) (AM|PM)/);
-                        var sunsetParts = sunsetTime.match(/(\d+):(\d+):(\d+) (AM|PM)/);
-
-                        if (sunriseParts && sunsetParts) {
-                            var sunriseInSeconds = convertTimeToSeconds(sunriseParts[1], sunriseParts[2], sunriseParts[3], sunriseParts[4]);
-                            var sunsetInSeconds = convertTimeToSeconds(sunsetParts[1], sunsetParts[2], sunsetParts[3], sunsetParts[4]);
-
-                            sunriseSunsetCache = { sunrise: sunriseInSeconds, sunset: sunsetInSeconds };
-                            sunriseSunsetCacheDate = today;
-
-                            callback(sunriseInSeconds, sunsetInSeconds);
-                        } else {
-                            console.error("Invalid sunrise/sunset format.");
+                fetch("https://api.sunrisesunset.io/json?lat="+lat+"&lng="+lng+"&timezone=auto&date=today")
+                    .then(function(r){return r.json();})
+                    .then(function(data){
+                        var sp=data.results.sunrise.match(/(\d+):(\d+):(\d+) (AM|PM)/);
+                        var ep=data.results.sunset.match(/(\d+):(\d+):(\d+) (AM|PM)/);
+                        if(sp&&ep){
+                            var rise=convertTimeToSeconds(sp[1],sp[2],sp[3],sp[4]);
+                            var set=convertTimeToSeconds(ep[1],ep[2],ep[3],ep[4]);
+                            sunriseSunsetCache={sunrise:rise,sunset:set};
+                            sunriseSunsetCacheDate=today;
+                            callback(rise,set);
                         }
                     })
-                    .catch(function(error) { console.error("Error fetching sunrise-sunset data:", error); });
+                    .catch(function(e){console.error("Sunrise API:",e);});
             }
 
-            // MOON SECTION
+            function getMoonRiseSetInSeconds(lat,lng,date,callback) {
+                var key=date.getFullYear()+"-"+date.getMonth()+"-"+date.getDate();
+                if(moonCache[key]){callback(moonCache[key].rise,moonCache[key].set);return;}
+                var mt=SunCalc.getMoonTimes(date,lat,lng);
+                mt.rise=mt.rise||new Date(); mt.set=mt.set||new Date();
+                var rise=Math.round(mt.rise.getHours()*3600+mt.rise.getMinutes()*60+mt.rise.getSeconds());
+                var set=Math.round(mt.set.getHours()*3600+mt.set.getMinutes()*60+mt.set.getSeconds());
+                moonCache[key]={rise,set};
+                callback(rise,set);
+            }
 
-            function getMoonRiseSetInSeconds(lat, lng, date, callback) {
-                // Bug fix 3: cache moon rise/set by date string so it's not recalculated every frame
-                var key = date.getFullYear() + "-" + date.getMonth() + "-" + date.getDate();
-                if (moonCache[key]) {
-                    callback(moonCache[key].rise, moonCache[key].set);
-                    return;
+            function calculateMoonPosition(canvasEl,riseS,setS) {
+                var w=canvasEl.width||window.innerWidth;
+                var rx=Math.round(Math.max(0,Math.min(w,(riseS/86400)*w)));
+                var sx=Math.round(Math.max(0,Math.min(w,(setS/86400)*w)));
+                if(sx<rx) sx+=w;
+                return {moonRiseX:rx,moonSetX:sx};
+            }
+
+            function selectCurveForX(curves,x) {
+                for(var i=0;i<curves.length;i++) {
+                    if(x>=curves[i].riseX&&x<=curves[i].setX) return curves[i];
                 }
-
-                var moonTimes = SunCalc.getMoonTimes(date, lat, lng);
-                moonTimes.rise = moonTimes.rise || new Date();
-                moonTimes.set = moonTimes.set || new Date();
-
-                var moonRiseInSeconds = moonTimes.rise.getHours() * 3600 + moonTimes.rise.getMinutes() * 60 + moonTimes.rise.getSeconds();
-                var moonSetInSeconds = moonTimes.set.getHours() * 3600 + moonTimes.set.getMinutes() * 60 + moonTimes.set.getSeconds();
-
-                moonCache[key] = { rise: Math.round(moonRiseInSeconds), set: Math.round(moonSetInSeconds) };
-                callback(moonCache[key].rise, moonCache[key].set);
+                return null;
             }
 
-            function calculateMoonPosition(canvasEl, moonRiseInSeconds, moonSetInSeconds) {
-                var canvasWidth = canvasEl.width || window.innerWidth;
-                var moonRiseX = Math.round(Math.max(0, Math.min(canvasWidth, (moonRiseInSeconds / 86400) * canvasWidth)));
-                var moonSetX = Math.round(Math.max(0, Math.min(canvasWidth, (moonSetInSeconds / 86400) * canvasWidth)));
-
-                if (moonSetX < moonRiseX) {
-                    moonSetX += canvasWidth;
-                }
-
-                return { moonRiseX: moonRiseX, moonSetX: moonSetX };
-            }
-
-            function drawMoonParabola(moonRiseX, moonSetX, moonRiseY, moonSetY, moonParabolaPeakY) {
+            function drawMoonParabola(riseX,setX,riseY,setY,peakY,style) {
+                ctx.save();
+                ctx.globalAlpha=style.opacity;
                 ctx.beginPath();
-                ctx.moveTo(moonRiseX, moonRiseY);
-                var controlX = (moonRiseX + moonSetX) / 2;
-                ctx.quadraticCurveTo(controlX, moonParabolaPeakY, moonSetX, moonSetY);
-                ctx.strokeStyle = "white";
-                ctx.lineWidth = 0.5;
+                ctx.moveTo(riseX,riseY);
+                ctx.quadraticCurveTo((riseX+setX)/2,peakY,setX,setY);
+                ctx.strokeStyle="white";
+                ctx.lineWidth=style.lineWidth;
                 ctx.stroke();
+                ctx.restore();
             }
 
-            // SUN SECTION
-
-            function convertTimeToSeconds(hours, minutes, seconds, period) {
-                var totalSeconds = parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds);
-                if (period === "PM" && parseInt(hours) !== 12) {
-                    totalSeconds += 12 * 3600;
-                }
-                if (period === "AM" && parseInt(hours) === 12) {
-                    totalSeconds -= 12 * 3600;
-                }
-                return totalSeconds;
+            function convertTimeToSeconds(hours,minutes,seconds,period) {
+                var t=parseInt(hours)*3600+parseInt(minutes)*60+parseInt(seconds);
+                if(period==="PM"&&parseInt(hours)!==12) t+=43200;
+                if(period==="AM"&&parseInt(hours)===12) t-=43200;
+                return t;
             }
 
-            function calculateSunPosition(canvasEl, sunriseInSeconds, sunsetInSeconds) {
-                var canvasWidth = canvasEl.width || window.innerWidth;
-                var sunRiseX = Math.max(0, Math.min(canvasWidth, (sunriseInSeconds / 86400) * canvasWidth));
-                var sunSetX = Math.max(0, Math.min(canvasWidth, (sunsetInSeconds / 86400) * canvasWidth));
-                return { sunRiseX: sunRiseX, sunSetX: sunSetX };
+            function calculateSunPosition(canvasEl,riseS,setS) {
+                var w=canvasEl.width||window.innerWidth;
+                return {
+                    sunRiseX:Math.max(0,Math.min(w,(riseS/86400)*w)),
+                    sunSetX: Math.max(0,Math.min(w,(setS/86400)*w))
+                };
             }
 
-            function drawVerticalLine(x, isVisible) {
+            function drawVerticalLine(x) {
+                ctx.save();
                 ctx.beginPath();
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, canvas.height);
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = isVisible ? "white" : "transparent";
+                ctx.moveTo(x,0); ctx.lineTo(x,canvas.height);
+                ctx.lineWidth=1; ctx.strokeStyle="white"; ctx.globalAlpha=0.9;
                 ctx.stroke();
+                ctx.restore();
             }
 
-            function drawLines(sunrise, sunset) {
-                // Bug fix 4: Cancel any previous animation frame before starting a new one
-                // (handled by caller — see updatePosition)
+            function formatTime(date) {
+                return String(date.getHours()).padStart(2,"0")+":"
+                      +String(date.getMinutes()).padStart(2,"0")+":"
+                      +String(date.getSeconds()).padStart(2,"0");
+            }
 
-                var width = canvas.width;
-                var height = canvas.height;
-                var lineThickness = 0.25 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+            function formatSeconds(s) {
+                if(!s) return "—";
+                return String(Math.floor(s/3600)).padStart(2,"0")+":"
+                      +String(Math.floor((s%3600)/60)).padStart(2,"0");
+            }
 
-                var current_time = new Date();
-                var start_date = new Date(current_time.getFullYear(), 0, 1, 0, 0, 0, 0);
-                var time_diff = current_time - start_date;
+            // ─────────────────────────────────────────────
+            // MAIN DRAW LOOP
+            // ─────────────────────────────────────────────
+            function drawLines(sunrise,sunset) {
+                var width=canvas.width, height=canvas.height;
+                var lineThickness=0.25*parseFloat(getComputedStyle(document.documentElement).fontSize);
+                var current_time=new Date();
+                var start_date=new Date(current_time.getFullYear(),0,1,0,0,0,0);
+                var time_diff=current_time-start_date;
+                var start_date_line4=new Date(1915,11,25);
+                var time_diff4=current_time-start_date_line4;
+                var speed_betageuze=width/(1080*60);
+                var speed_line2=width/60;
+                var speed_line3=width/(365.25*24*60*60);
+                var speed_line4=360/(-1*(1000*525600000));
 
-                var start_date_line4 = new Date(1915, 11, 25);
-                var time_diff4 = current_time - start_date_line4;
+                ctx.clearRect(0,0,width,height);
+                namedLines=[];
 
-                var speed_betageuze = width / (1080 * 60);
-                var speed_line2 = width / 60;
-                var speed_line3 = width / (365.25 * 24 * 60 * 60);
-                var speed_line4 = 360 / (-1 * (1000 * 525600000));
-
-                var position1 = ((time_diff4 / 1000) * speed_betageuze) % width;
-
-                ctx.clearRect(0, 0, width, height);
-                ctx.beginPath();
-                ctx.setLineDash([1, 10]);
-                ctx.moveTo(position1, 0);
-                ctx.lineTo(position1, height);
-                ctx.lineWidth = lineThickness;
-                ctx.strokeStyle = "white";
-                ctx.stroke();
+                // ── Betageuze ──
+                var pos1=((time_diff4/1000)*speed_betageuze)%width;
+                ctx.beginPath(); ctx.setLineDash([1,10]);
+                ctx.moveTo(pos1,0); ctx.lineTo(pos1,height);
+                ctx.lineWidth=lineThickness; ctx.strokeStyle="white"; ctx.stroke();
                 ctx.setLineDash([]);
+                registerLine("betageuze",pos1,"Betageuze — since 25 Dec 1915",110,-0.6);
 
-                var position2 = ((time_diff / 1000) * speed_line2) % width;
-                var position3 = ((time_diff / 1000) * speed_line3) % width;
+                // ── Sekunden ──
+                var pos2=((time_diff/1000)*speed_line2)%width;
+                ctx.beginPath(); ctx.moveTo(pos2,0); ctx.lineTo(pos2,height);
+                ctx.lineWidth=lineThickness; ctx.strokeStyle="white"; ctx.stroke();
+                registerLine("line2",pos2,"seconds — "+current_time.getSeconds()+"s",220,-0.2);
 
+                // ── Jahr ──
+                var pos3=((time_diff/1000)*speed_line3)%width;
+                ctx.beginPath(); ctx.moveTo(pos3,0); ctx.lineTo(pos3,height);
+                ctx.lineWidth=lineThickness; ctx.strokeStyle="white"; ctx.stroke();
+                registerLine("line3",pos3,"year — day "+Math.floor(time_diff/86400000),330,0.2);
+
+                // ── Rotierende Linie ──
+                var cx=width/2, cy=height/2;
+                var diag=Math.sqrt(width*width+height*height);
+                var l4=diag*0.5;
+                var rot=((time_diff4/1000)*speed_line4)%360;
+                var c4=Math.cos(rot*Math.PI/180), s4=Math.sin(rot*Math.PI/180);
                 ctx.beginPath();
-                ctx.moveTo(position2, 0);
-                ctx.lineTo(position2, height);
-                ctx.lineWidth = lineThickness;
-                ctx.strokeStyle = "white";
+                ctx.moveTo(cx,cy); ctx.lineTo(cx+l4*c4,cy-l4*s4);
+                ctx.lineWidth=lineThickness; ctx.strokeStyle="white"; ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(cx+l4*c4,cy-l4*s4); ctx.lineTo(cx-l4*c4,cy+l4*s4);
                 ctx.stroke();
 
-                ctx.beginPath();
-                ctx.moveTo(position3, 0);
-                ctx.lineTo(position3, height);
-                ctx.lineWidth = lineThickness;
-                ctx.stroke();
+                // ── Twilight ──
+                var tw=getTwilightSeconds(latitude,longitude);
+                drawTwilightParabola(tw.astronomicalDawn,tw.astronomicalDusk,0.55,0.3,0.12);
+                drawTwilightParabola(tw.nauticalDawn,tw.nauticalDusk,0.5,0.4,0.18);
+                drawTwilightParabola(tw.civilDawn,tw.civilDusk,0.47,0.5,0.28);
+                if(tw.civilDawn)        registerLine("civilDawn",       (tw.civilDawn/86400)*width,       "civil dawn",       280,-0.8);
+                if(tw.civilDusk)        registerLine("civilDusk",       (tw.civilDusk/86400)*width,       "civil dusk",       280, 0.8);
+                if(tw.nauticalDawn)     registerLine("nauticalDawn",    (tw.nauticalDawn/86400)*width,    "nautical dawn",    220,-0.9);
+                if(tw.nauticalDusk)     registerLine("nauticalDusk",    (tw.nauticalDusk/86400)*width,    "nautical dusk",    220, 0.9);
+                if(tw.astronomicalDawn) registerLine("astronomicalDawn",(tw.astronomicalDawn/86400)*width,"astronomical dawn",165,-1.0);
+                if(tw.astronomicalDusk) registerLine("astronomicalDusk",(tw.astronomicalDusk/86400)*width,"astronomical dusk",165, 1.0);
 
-                var centerX = width / 2;
-                var centerY = height / 2;
-                var diagonal = Math.sqrt(width * width + height * height);
-                var line4Length = diagonal * 0.5;
-                var rotationAngle = ((time_diff4 / 1000) * speed_line4) % 360;
-                var line4EndX = centerX + line4Length * Math.cos((rotationAngle * Math.PI) / 180);
-                var line4EndY = centerY - line4Length * Math.sin((rotationAngle * Math.PI) / 180);
-                var line5EndX = centerX - line4Length * Math.cos((rotationAngle * Math.PI) / 180);
-                var line5EndY = centerY + line4Length * Math.sin((rotationAngle * Math.PI) / 180);
-
-                ctx.beginPath();
-                ctx.moveTo(centerX, centerY);
-                ctx.lineTo(line4EndX, line4EndY);
-                ctx.lineWidth = lineThickness;
-                ctx.stroke();
-
-                ctx.beginPath();
-                ctx.moveTo(line4EndX, line4EndY);
-                ctx.lineTo(line5EndX, line5EndY);
-                ctx.stroke();
-
-                // Draw sun parabola
-                if (sunrise && sunset) {
-                    var minY = Math.min(sunrise.y, sunset.y);
-                    var maxY = Math.max(sunrise.y, sunset.y);
-
+                // ── Sonne ──
+                if(sunrise&&sunset){
                     ctx.beginPath();
-                    ctx.moveTo(sunrise.x, minY);
-                    ctx.quadraticCurveTo(width / 2, height / 2, sunset.x, minY);
-                    ctx.lineTo(sunset.x, maxY);
-                    ctx.quadraticCurveTo(width / 2, height / 2, sunrise.x, maxY);
+                    ctx.moveTo(sunrise.x,sunrise.y);
+                    ctx.quadraticCurveTo(width/2,height/2,sunset.x,sunset.y);
+                    ctx.lineTo(sunset.x,height);
+                    ctx.quadraticCurveTo(width/2,height/2,sunrise.x,height);
                     ctx.closePath();
-                    ctx.strokeStyle = "white";
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
+                    ctx.strokeStyle="white"; ctx.lineWidth=1; ctx.stroke();
+                    registerLine("sunrise",sunrise.x,"sunrise — "+formatSeconds(sunriseSunsetCache&&sunriseSunsetCache.sunrise),440,-0.5);
+                    registerLine("sunset", sunset.x, "sunset — " +formatSeconds(sunriseSunsetCache&&sunriseSunsetCache.sunset), 440, 0.5);
                 }
 
-                // Draw vertical sun line
-                var secondsSinceMidnight = current_time.getHours() * 3600 + current_time.getMinutes() * 60 + current_time.getSeconds();
-                var xCoordinate = (secondsSinceMidnight / 86400) * canvas.width;
-                var isVisible = sunrise && sunset && xCoordinate > sunrise.x && xCoordinate < sunset.x;
-                drawVerticalLine(xCoordinate, isVisible);
+                // ── "Jetzt"-Stritch ──
+                var secNow=current_time.getHours()*3600+current_time.getMinutes()*60+current_time.getSeconds();
+                var xNow=(secNow/86400)*width;
+                drawVerticalLine(xNow);
+                registerLine("now",xNow,formatTime(current_time),550,0);
 
-                // Bug fix 5: yesterday/tomorrow were declared but current_time was passed to all three —
-                // now each uses its own correctly offset date.
-                var yesterday = new Date(current_time);
-                yesterday.setDate(yesterday.getDate() - 1);
+                checkCrossings(xNow,namedLines.filter(function(l){return l.id!=="now";}));
 
-                var tomorrow = new Date(current_time);
-                tomorrow.setDate(tomorrow.getDate() + 1);
+                // ── Mond ──
+                var moonStyle=getMoonLineStyle(current_time);
+                var yesterday=new Date(current_time); yesterday.setDate(yesterday.getDate()-1);
+                var tomorrow=new Date(current_time);  tomorrow.setDate(tomorrow.getDate()+1);
+                var moonCurves=[];
 
-                getMoonRiseSetInSeconds(latitude, longitude, yesterday, function (rise, set) {
-                    var pos = calculateMoonPosition(canvas, rise, set);
-                    drawMoonParabola(pos.moonRiseX - canvas.width, pos.moonSetX - canvas.width, 0, 0, 0.4 * canvas.height);
+                getMoonRiseSetInSeconds(latitude,longitude,yesterday,function(rise,set){
+                    var pos=calculateMoonPosition(canvas,rise,set);
+                    var curve={riseX:pos.moonRiseX-width,setX:pos.moonSetX-width};
+                    moonCurves.push(curve);
+                    drawMoonParabola(curve.riseX,curve.setX,0,0,0.4*height,moonStyle);
+                });
+                getMoonRiseSetInSeconds(latitude,longitude,current_time,function(rise,set){
+                    var pos=calculateMoonPosition(canvas,rise,set);
+                    var curve={riseX:pos.moonRiseX,setX:pos.moonSetX};
+                    moonCurves.push(curve);
+                    drawMoonParabola(curve.riseX,curve.setX,0,0,0.4*height,moonStyle);
+                    registerLine("moonrise",pos.moonRiseX,"moonrise",185,-0.4);
+                    registerLine("moonset", pos.moonSetX, "moonset", 185, 0.4);
+                });
+                getMoonRiseSetInSeconds(latitude,longitude,tomorrow,function(rise,set){
+                    var pos=calculateMoonPosition(canvas,rise,set);
+                    var curve={riseX:pos.moonRiseX+width,setX:pos.moonSetX+width};
+                    moonCurves.push(curve);
+                    drawMoonParabola(curve.riseX,curve.setX,0,0,0.4*height,moonStyle);
+
+                    var activeMoon=selectCurveForX(moonCurves,xNow);
+                    var illum=SunCalc.getMoonIllumination(current_time).fraction;
+                    updateCurveOscillators(
+                        xNow,pos2,
+                        sunrise?sunrise.x:-1, sunset?sunset.x:-1,
+                        activeMoon?activeMoon.riseX:NaN, activeMoon?activeMoon.setX:NaN,
+                        illum
+                    );
                 });
 
-                getMoonRiseSetInSeconds(latitude, longitude, current_time, function (rise, set) {
-                    var pos = calculateMoonPosition(canvas, rise, set);
-                    drawMoonParabola(pos.moonRiseX, pos.moonSetX, 0, 0, 0.4 * canvas.height);
-                });
+                // ── Planeten ──
+                Object.values(PLANETS).forEach(function(p){drawPlanetLine(p,latitude,longitude,current_time);});
 
-                getMoonRiseSetInSeconds(latitude, longitude, tomorrow, function (rise, set) {
-                    var pos = calculateMoonPosition(canvas, rise, set);
-                    drawMoonParabola(pos.moonRiseX + canvas.width, pos.moonSetX + canvas.width, 0, 0, 0.4 * canvas.height);
-                });
+                // ── Erdbeben ──
+                drawQuakes(Date.now(),pos2,width,height);
 
-                // Bug fix 4: Store the animationId so resize can cancel the old loop
-                animationId = requestAnimationFrame(function () {
-                    drawLines(startSunrise, endSunset);
-                });
+                animationId=requestAnimationFrame(function(){drawLines(startSunrise,endSunset);});
             }
 
+            // ─────────────────────────────────────────────
+            // INIT
+            // ─────────────────────────────────────────────
             function updatePosition() {
-                // Bug fix 4: Cancel the running animation loop before resizing and restarting
-                if (animationId !== null) {
-                    cancelAnimationFrame(animationId);
-                    animationId = null;
-                }
-
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-
-                getSunriseSunset(latitude, longitude, function (sunrise, sunset) {
-                    var sunPositions = calculateSunPosition(canvas, sunrise, sunset);
-                    var roundedSunriseX = Math.round(sunPositions.sunRiseX);
-                    var roundedSunsetX = Math.round(sunPositions.sunSetX);
-
-                    startSunrise = { x: roundedSunriseX, y: canvas.height };
-                    endSunset = { x: roundedSunsetX, y: canvas.height };
-
-                    animationId = requestAnimationFrame(function () {
-                        drawLines(startSunrise, endSunset);
-                    });
+                if(animationId!==null){cancelAnimationFrame(animationId);animationId=null;}
+                twilightCache=null;
+                canvas.width=window.innerWidth;
+                canvas.height=window.innerHeight;
+                getSunriseSunset(latitude,longitude,function(rise,set){
+                    var sp=calculateSunPosition(canvas,rise,set);
+                    startSunrise={x:Math.round(sp.sunRiseX),y:canvas.height};
+                    endSunset=   {x:Math.round(sp.sunSetX), y:canvas.height};
+                    animationId=requestAnimationFrame(function(){drawLines(startSunrise,endSunset);});
                 });
             }
 
-            // Bug fix 6: updateLocation was used as both a watchPosition callback AND called getCurrentPosition separately,
-            // causing double-init and a confusing recursive-looking structure.
-            // Now updateLocation only updates lat/lng and invalidates caches; the animation loop reads the new values automatically.
             function updateLocation(position) {
-                latitude = position.coords.latitude;
-                longitude = position.coords.longitude;
-
-                // Invalidate caches so the new location is used on the next frame cycle
-                sunriseSunsetCache = null;
-                sunriseSunsetCacheDate = null;
-                moonCache = {};
-
-                // Re-fetch sun data for the new location and restart the loop
+                latitude=position.coords.latitude;
+                longitude=position.coords.longitude;
+                sunriseSunsetCache=null; sunriseSunsetCacheDate=null;
+                moonCache={}; twilightCache=null;
                 updatePosition();
             }
 
-            function locationError(error) {
-                console.error("Error getting location:", error.message);
-            }
-
-            // Bug fix 6 continued: single watchPosition is sufficient — it fires immediately on first fix
-            // and then again on position change. No need for a separate getCurrentPosition call.
-            navigator.geolocation.watchPosition(updateLocation, locationError);
-
-            window.addEventListener("load", function () {
-                updatePosition();
-                showAlert();
+            navigator.geolocation.watchPosition(updateLocation,function(e){
+                console.error("Geolocation error:",e.message);
             });
 
-            window.addEventListener("resize", updatePosition);
+            window.addEventListener("load",function(){
+                updatePosition();
+                fetchQuakes();
+                if(quakeFetchInterval===null){
+                    quakeFetchInterval=setInterval(fetchQuakes,30000);
+                }
+                showAlert();
+            });
+            window.addEventListener("resize",updatePosition);
         </script>
     </body>
 </html>
